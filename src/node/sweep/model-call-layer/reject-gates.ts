@@ -1,5 +1,6 @@
 import type { PositionDTO, TextEditDTO } from '../../../common/editor-dto';
 import { normalizeCrlf } from '../../../common/text/crlf';
+import { countLines, lineIndexAtOffset } from '../../../common/text/line-index';
 
 // Компилируется один раз вне функции; используется в whitespace-гейте и не должна пересоздаваться на каждый вызов.
 const WHITESPACE = /\s+/g;
@@ -80,27 +81,4 @@ function editVolumeRejected(edit: TextEditDTO, oldLineCount: number): boolean {
     const touchedLines = Math.max(removedLines, insertedLines);
     const limit = Math.max(12, Math.ceil(oldLineCount * 0.75));
     return touchedLines > limit;
-}
-
-// Вычисляет индекс строки по символьному смещению без разбивки строк в массив; нужен чтобы определить строку курсора с минимальной аллокацией.
-function lineIndexAtOffset(text: string, offset: number): number {
-    const safeOffset = Math.max(0, Math.min(offset, text.length));
-    let line = 0;
-    for (let i = 0; i < safeOffset; i++) {
-        if (text.charCodeAt(i) === 10) {
-            line++;
-        }
-    }
-    return line;
-}
-
-// Считает строки через LF-символы; выделена отдельно чтобы не аллоцировать массив через split для простого подсчёта.
-function countLines(text: string): number {
-    let count = 1;
-    for (let i = 0; i < text.length; i++) {
-        if (text.charCodeAt(i) === 10) {
-            count++;
-        }
-    }
-    return count;
 }

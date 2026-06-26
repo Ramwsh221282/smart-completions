@@ -5,6 +5,7 @@ import { KeybindingContribution, KeybindingRegistry } from '@theia/core/lib/brow
 import { MonacoEditorProvider } from '@theia/monaco/lib/browser/monaco-editor-provider';
 import { EmbeddingIndexService } from '../common/protocol';
 import { NesController } from './nes-module/nes-controller';
+import { SweepTelemetry } from './sweep/telemetry/sweep-telemetry';
 
 export const RebuildIndexCommand: Command = {
     id: 'smart-completions.rebuildIndex',
@@ -36,12 +37,23 @@ export const NesJumpOrAcceptCommand: Command = {
     label: 'Smart Completions: Jump or Accept NES Suggestion',
 };
 
+export const NesTelemetryDumpCommand: Command = {
+    id: 'smart-completions.nes.telemetry.dump',
+    label: 'Smart Completions: Dump NES Telemetry',
+};
+
+export const NesTelemetryResetCommand: Command = {
+    id: 'smart-completions.nes.telemetry.reset',
+    label: 'Smart Completions: Reset NES Telemetry',
+};
+
 @injectable()
 export class SmartCompletionsCommands implements CommandContribution, KeybindingContribution {
     @inject(EmbeddingIndexService) private readonly indexService!: EmbeddingIndexService;
     @inject(MessageService) private readonly messages!: MessageService;
     @inject(MonacoEditorProvider) private readonly monacoEditors!: MonacoEditorProvider;
     @inject(NesController) private readonly nesController!: NesController;
+    @inject(SweepTelemetry) private readonly telemetry!: SweepTelemetry;
 
     registerCommands(registry: CommandRegistry): void {
         registry.registerCommand(FimAcceptCommand, {
@@ -55,6 +67,12 @@ export class SmartCompletionsCommands implements CommandContribution, Keybinding
         });
         registry.registerCommand(NesJumpOrAcceptCommand, {
             execute: () => this.nesController.jumpOrAccept(),
+        });
+        registry.registerCommand(NesTelemetryDumpCommand, {
+            execute: () => console.info('Smart Completions NES telemetry', this.telemetry.snapshot()),
+        });
+        registry.registerCommand(NesTelemetryResetCommand, {
+            execute: () => this.telemetry.reset(),
         });
         registry.registerCommand(RebuildIndexCommand, {
             execute: async () => {

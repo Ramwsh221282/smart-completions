@@ -6,6 +6,7 @@ import * as monaco from '@theia/monaco-editor-core';
 import { FimConfig } from '../../common/fim-types';
 import { CoordinationMode } from '../../common/model-types';
 import { FimBackendService } from '../../common/protocol';
+import { NesViewZoneRenderer } from '../nes-render/nes-view-zone-renderer';
 import { readFimConfig } from '../preferences/preferences-schema';
 import { fileModeForLanguage } from '../shared/file-mode';
 
@@ -13,6 +14,7 @@ import { fileModeForLanguage } from '../shared/file-mode';
 export class FimInlineProvider implements FrontendApplicationContribution, monaco.languages.InlineCompletionsProvider, Disposable {
     @inject(FimBackendService) private readonly fim!: FimBackendService;
     @inject(PreferenceService) private readonly preferences!: PreferenceService;
+    @inject(NesViewZoneRenderer) private readonly nesRenderer!: NesViewZoneRenderer;
 
     private readonly toDispose = new DisposableCollection();
     private config!: FimConfig;
@@ -38,6 +40,9 @@ export class FimInlineProvider implements FrontendApplicationContribution, monac
         token: monaco.CancellationToken,
     ): Promise<monaco.languages.InlineCompletions | undefined> {
         if (!this.enabled || this.coordinationMode === 'nes-only') {
+            return undefined;
+        }
+        if (this.coordinationMode === 'nes-priority' && this.nesRenderer.isVisible()) {
             return undefined;
         }
         const fileMode = fileModeForLanguage(model.getLanguageId());

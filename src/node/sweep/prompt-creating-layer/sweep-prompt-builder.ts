@@ -1,11 +1,13 @@
 import { SweepLogger } from '../../../common/sweep/logger';
 import { getSweepProfile, sweepRequestModelName } from '../../../common/sweep/profiles';
 import { SweepEditVolume } from '../../../common/sweep/types';
+import { dedupeContextFiles } from '../../../common/sweep/dedup-context';
 import { normalizeCrlf } from '../../../common/text/crlf';
 import { trimSweepContext, BuildSweepPromptInput, TrimmedSweepContext } from '../data-formatting-layer/context-trimmer';
 import { formatSweepDiagnosticsLines } from '../data-formatting-layer/diagnostics-format';
 import { formatSweepDiffBlocks, unifiedDiffToOriginalUpdated } from '../data-formatting-layer/diff-blocks';
 import { formatSweepCurrentFileBlock, formatSweepNeighborFileBlocks, formatSweepRelatedFileBlocks } from '../data-formatting-layer/file-blocks';
+import { charTokenEstimate } from '../token-budget/token-counter';
 
 // Логгер строителя промпта; нужен для диагностики структуры промпта и печати полного текста для инспекции.
 const LOG = new SweepLogger('node:prompt-creating');
@@ -21,6 +23,9 @@ export interface BuiltSweepPrompt {
     format: 'sweep';
     overflow: boolean;
     prefill: string;
+    promptTokens: number;
+    tokenMode: 'tokenizer' | 'char-fallback';
+    contextProfile: string;
 }
 
 /**
@@ -30,11 +35,19 @@ export interface BuiltSweepPrompt {
 export function buildSweepPrompt(input: BuildSweepPromptInput): BuiltSweepPrompt {
     const profile = input.profile ?? getSweepProfile(input.modelId === 'sweep-small' ? '1.5b' : 'v2-7b');
     const maxTokens = maxTokensForSweepVolume(input.editVolume, profile.maxOutputTokens);
-    const trimmed = trimSweepContext(input, maxTokens);
+    const deduped = dedupeContextFiles({
+        currentFilePath: input.filePath,
+        neighbors: input.neighbors ?? [],
+        relatedFiles: input.relatedFiles ?? [],
+    });
+    const trimInput = { ...input, neighbors: deduped.neighbors, relatedFiles: deduped.relatedFiles };
+    const trimmed = trimSweepContext(trimInput, maxTokens);
     const range = windowRange(input.windowStartLine ?? 0, trimmed.windowText);
-    const sections = buildSweepSections(input, trimmed, range);
+    const sections = buildSweepSections(trimInput, trimmed, range);
     const prompt = sections.join('\n');
     const llamaModel = input.requestModelName ?? sweepRequestModelName(profile.id, '');
+    const promptTokens = input.tokenCounter ? input.tokenCounter.count(prompt) : charTokenEstimate(prompt);
+    const tokenMode = input.tokenCounter?.mode ?? 'char-fallback';
     LOG.info('Sweep prompt built', {
         modelId: input.modelId,
         llamaModel,
@@ -52,6 +65,9 @@ export function buildSweepPrompt(input: BuildSweepPromptInput): BuiltSweepPrompt
         diagnostics: trimmed.diagnostics.length,
         hasOutline: Boolean(trimmed.outline),
         outputSnippets: trimmed.outputSnippets.length,
+        dedupDropped: deduped.dropped,
+        promptTokens,
+        tokenMode,
     });
     LOG.prompt('training-format', prompt, { modelId: input.modelId, contextProfile: profile.id, fileMode: input.fileMode ?? 'code', range });
     return {
@@ -62,6 +78,9 @@ export function buildSweepPrompt(input: BuildSweepPromptInput): BuiltSweepPrompt
         format: 'sweep',
         overflow: trimmed.overflow,
         prefill: trimmed.prefill,
+        promptTokens,
+        tokenMode,
+        contextProfile: profile.id,
     };
 }
 

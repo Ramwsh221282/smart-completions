@@ -69,6 +69,20 @@ export interface NesRequest {
     outputSnippets?: NesOutputSnippet[];
 }
 
+/** Статус backend-ответа нужен telemetry, чтобы отделять edit/no-edit/reject/error без парсинга логов. */
+export type NesResponseStatus = 'edit' | 'no-edit' | 'rejected' | 'overflow' | 'error';
+
+/** Метаданные NES-ответа связывают backend outcome с показом, accept и dismiss на frontend. */
+export interface NesResponseMeta {
+    status: NesResponseStatus;
+    rejectReason?: string;
+    durationMs: number;
+    promptTokens?: number;
+    tokenMode: 'tokenizer' | 'char-fallback';
+    contextProfile: string;
+    editLineCount?: number;
+}
+
 /** Ответ NES (backend → frontend) с правками, которые frontend показывает во View Zone. */
 export interface NesResponse {
     edits: TextEditDTO[];
@@ -77,4 +91,6 @@ export interface NesResponse {
     /** Цель прыжка курсора, если правка вне строки курсора. */
     jumpTo?: PositionDTO;
     modelId: string;
+    requestId: string;
+    meta: NesResponseMeta;
 }

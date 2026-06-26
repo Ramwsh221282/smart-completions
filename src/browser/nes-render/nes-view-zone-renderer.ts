@@ -1,4 +1,5 @@
 import { injectable } from '@theia/core/shared/inversify';
+import { Emitter } from '@theia/core/lib/common';
 import * as monaco from '@theia/monaco-editor-core';
 import { PositionDTO, TextEditDTO } from '../../common/editor-dto';
 import { NesResponse } from '../../common/nes-types';
@@ -12,6 +13,17 @@ export class NesViewZoneRenderer {
     private zoneId: string | undefined;
     // Последний NES-ответ; нужен для применения правки при accept и навигации при jumpOrAccept.
     private response: NesResponse | undefined;
+    // Флаг accept-пути не даёт onDidChangeContent засчитать принятую подсказку как dismiss.
+    private accepting = false;
+    // Событие показа подсказки — источник denominator для acceptance rate.
+    private readonly onDidShowEmitter = new Emitter<NesResponse>();
+    // Событие принятия подсказки — источник numerator для acceptance rate.
+    private readonly onDidAcceptEmitter = new Emitter<NesResponse>();
+    // Событие явного или implicit dismiss — нужно учитывать устаревшие подсказки.
+    private readonly onDidDismissEmitter = new Emitter<NesResponse>();
+    readonly onDidShow = this.onDidShowEmitter.event;
+    readonly onDidAccept = this.onDidAcceptEmitter.event;
+    readonly onDidDismiss = this.onDidDismissEmitter.event;
 
     /**
      * Показывает View Zone с предпросмотром правки под первой строкой предлагаемого диапазона;
@@ -34,6 +46,7 @@ export class NesViewZoneRenderer {
                 suppressMouseDown: true,
             });
         });
+        this.onDidShowEmitter.fire(response);
     }
 
     /**
@@ -46,12 +59,18 @@ export class NesViewZoneRenderer {
         if (!editor || !response || response.edits.length === 0) {
             return;
         }
-        editor.executeEdits('smart-completions-nes', response.edits.map(toMonacoEdit));
-        if (response.jumpTo) {
-            editor.setPosition(toMonacoPosition(response.jumpTo));
-            editor.revealPositionInCenterIfOutsideViewport(toMonacoPosition(response.jumpTo));
+        this.accepting = true;
+        try {
+            editor.executeEdits('smart-completions-nes', response.edits.map(toMonacoEdit));
+            if (response.jumpTo) {
+                editor.setPosition(toMonacoPosition(response.jumpTo));
+                editor.revealPositionInCenterIfOutsideViewport(toMonacoPosition(response.jumpTo));
+            }
+            this.onDidAcceptEmitter.fire(response);
+        } finally {
+            this.accepting = false;
+            this.clear();
         }
-        this.dismiss();
     }
 
     /**
@@ -80,6 +99,21 @@ export class NesViewZoneRenderer {
      * вызывается при каждом новом изменении контента чтобы устаревшая подсказка не висела.
      */
     dismiss(): void {
+        const response = this.response;
+        const shouldFireDismiss = response !== undefined && !this.accepting;
+        this.clear();
+        if (shouldFireDismiss) {
+            this.onDidDismissEmitter.fire(response);
+        }
+    }
+
+    /** Сообщает trigger/render слоям, что NES View Zone сейчас занимает приоритетный канал. */
+    isVisible(): boolean {
+        return this.zoneId !== undefined && this.response !== undefined;
+    }
+
+    /** Удаляет активную View Zone и сбрасывает состояние без telemetry-события. */
+    private clear(): void {
         if (this.editor && this.zoneId) {
             const zoneId = this.zoneId;
             this.editor.changeViewZones(accessor => accessor.removeZone(zoneId));

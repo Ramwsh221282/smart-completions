@@ -24,6 +24,9 @@ export interface ParsedSweepCompletion {
     edits: TextEditDTO[];
     primaryRange?: RangeDTO;
     jumpTo?: PositionDTO;
+    updatedWindow?: string;
+    status: 'edit' | 'no-edit' | 'rejected';
+    rejectReason?: string;
 }
 
 /**
@@ -42,12 +45,12 @@ export function parseSweepCompletion(input: ParseSweepCompletionInput): ParsedSw
     });
     if (!updatedWindow || updatedWindow.trim() === 'NO_EDITS') {
         LOG.info('Sweep response parsed as no-op', { reason: updatedWindow ? 'NO_EDITS' : 'empty' });
-        return { edits: [] };
+        return { edits: [], status: 'no-edit', rejectReason: updatedWindow ? 'NO_EDITS' : 'empty' };
     }
     const edit = diffWindows(normalizeCrlf(input.oldWindowText), updatedWindow, input.windowStart);
     if (!edit) {
         LOG.info('Sweep response produced no textual diff');
-        return { edits: [] };
+        return { edits: [], updatedWindow, status: 'no-edit', rejectReason: 'no-diff' };
     }
     const rejectReason = sweepRejectReason({
         oldWindowText: input.oldWindowText,
@@ -58,7 +61,7 @@ export function parseSweepCompletion(input: ParseSweepCompletionInput): ParsedSw
     });
     if (rejectReason !== undefined) {
         LOG.info('Sweep response rejected by gate', { reason: rejectReason, range: edit.range });
-        return { edits: [] };
+        return { edits: [], updatedWindow, status: 'rejected', rejectReason };
     }
     LOG.info('Sweep response parsed into edit', { range: edit.range, newTextChars: edit.newText.length });
     if (process.env.NODE_ENV === 'development') {
@@ -68,6 +71,8 @@ export function parseSweepCompletion(input: ParseSweepCompletionInput): ParsedSw
         edits: [edit],
         primaryRange: edit.range,
         jumpTo: edit.range.start,
+        updatedWindow,
+        status: 'edit',
     };
 }
 

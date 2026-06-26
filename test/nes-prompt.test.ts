@@ -91,6 +91,26 @@ test('sweep retrieval neighbors render as native file blocks before the triad', 
     assert.ok(built.prompt.indexOf('src/dep.ts\nexport const dep') < built.prompt.indexOf('current/src/a.ts'));
 });
 
+test('sweep prompt dedupes current file and prefers related files over RAG neighbors', () => {
+    const built = buildSweepPrompt({
+        modelId: 'sweep-default',
+        filePath: 'src/a.ts',
+        windowText: 'const value = 1;',
+        broadFileText: 'const value = 1;',
+        cursorOffset: 12,
+        recentEdits,
+        neighbors: [
+            { filePath: 'src/types.ts', startLine: 1, endLine: 3, text: 'export interface User { fullName: string; }', score: 0.9 },
+            { filePath: 'src/a.ts', startLine: 1, endLine: 1, text: 'stale current chunk', score: 0.8 },
+        ],
+        relatedFiles: [{ filePath: 'src/types.ts', content: 'export interface User { displayName: string; }' }],
+        editVolume: 'medium',
+    });
+    assert.ok(built.prompt.includes('<|file_sep|>src/types.ts\nexport interface User { displayName: string; }'));
+    assert.ok(!built.prompt.includes('fullName: string'));
+    assert.ok(!built.prompt.includes('stale current chunk'));
+});
+
 test('sweep broad current file block is first when present', () => {
     const built = buildSweepPrompt({
         modelId: 'sweep-default',

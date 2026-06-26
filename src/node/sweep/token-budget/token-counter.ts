@@ -1,5 +1,8 @@
-// Qwen2.5-Coder выбран дефолтом потому что Sweep-модели базируются на Qwen BPE, его токенизация ближе всего к реальному бюджету промпта.
-const DEFAULT_QWEN_TOKENIZER = 'Qwen/Qwen2.5-Coder-1.5B';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+
+// Локальный Qwen2.5-Coder tokenizer поставляется с плагином, чтобы token-aware budget работал offline.
+const DEFAULT_QWEN_TOKENIZER = 'qwen2.5-coder';
 
 /**
  * Интерфейс синхронного счётчика токенов; разделяет загрузку (async ensureReady)
@@ -19,6 +22,14 @@ type AutoTokenizerFactory = {
 // Форма модуля @xenova/transformers; поле опционально потому что dynamic import может вернуть иную структуру при сбое или устаревшей версии.
 type TransformersModule = {
     AutoTokenizer?: AutoTokenizerFactory;
+    env?: TransformersEnv;
+};
+
+// Минимальная форма transformers.js env; нужна чтобы запретить сеть и указать bundled tokenizer root.
+type TransformersEnv = {
+    allowRemoteModels?: boolean;
+    allowLocalModels?: boolean;
+    localModelPath?: string;
 };
 
 // Форма BatchEncoding из Hugging Face transformers; input_ids содержит токены, остальные поля нас не интересуют.
@@ -76,10 +87,13 @@ export class QwenTokenCounter implements TokenCounter {
         }
     }
 
-    // Загружает @xenova/transformers через dynamic import, чтобы WASM не тянулся в bundle при старте, а только при первом predict.
+    /** Загружает tokenizer только из bundled resources; при любой ошибке включает char fallback. */
     private async load(): Promise<void> {
         try {
             const mod = await import('@xenova/transformers') as TransformersModule;
+            if (mod.env) {
+                configureTransformersEnv(mod.env);
+            }
             if (!mod.AutoTokenizer) {
                 this.fallback = true;
                 return;
@@ -89,6 +103,23 @@ export class QwenTokenCounter implements TokenCounter {
             this.fallback = true;
         }
     }
+}
+
+/** Настраивает transformers.js на локальные модели, чтобы offline запуск не пытался идти в HF Hub. */
+function configureTransformersEnv(env: TransformersEnv): void {
+    env.allowRemoteModels = false;
+    env.allowLocalModels = true;
+    env.localModelPath = resolveTokenizerRoot();
+}
+
+/** Находит tokenizer root и для production lib/, и для test lib-test/ сборки. */
+function resolveTokenizerRoot(): string {
+    const bundled = path.resolve(__dirname, '../../../resources/tokenizers');
+    if (fs.existsSync(bundled)) {
+        return bundled;
+    }
+    const workspace = path.resolve(process.cwd(), 'resources/tokenizers');
+    return fs.existsSync(workspace) ? workspace : bundled;
 }
 
 /**

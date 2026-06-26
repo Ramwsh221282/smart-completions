@@ -16,6 +16,8 @@ test('Sweep parser returns line replacement edit for changed window', () => {
         newText: 'TWO\n',
     }]);
     assert.deepEqual(parsed.jumpTo, { line: 11, character: 0 });
+    assert.equal(parsed.status, 'edit');
+    assert.equal(parsed.updatedWindow, 'one\nTWO\nthree');
 });
 
 test('Sweep parser ignores no-op sentinel', () => {
@@ -26,6 +28,8 @@ test('Sweep parser ignores no-op sentinel', () => {
         stopTokens: [],
     });
     assert.deepEqual(parsed.edits, []);
+    assert.equal(parsed.status, 'no-edit');
+    assert.equal(parsed.rejectReason, 'NO_EDITS');
 });
 
 test('Sweep parser rejects whitespace-only changes', () => {
@@ -36,6 +40,8 @@ test('Sweep parser rejects whitespace-only changes', () => {
         stopTokens: [],
     });
     assert.deepEqual(parsed.edits, []);
+    assert.equal(parsed.status, 'rejected');
+    assert.equal(parsed.rejectReason, 'whitespace-only');
 });
 
 test('NES parser strips zeta close marker', () => {

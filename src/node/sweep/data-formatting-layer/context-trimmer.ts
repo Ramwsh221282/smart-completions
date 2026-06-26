@@ -7,6 +7,7 @@ import type { SweepModelProfile } from '../../../common/sweep/profiles';
 import { getSweepProfile } from '../../../common/sweep/profiles';
 import { SweepEditVolume, SweepModelId, SweepOutputSnippet, SweepRelatedFile } from '../../../common/sweep/types';
 import { normalizeCrlf } from '../../../common/text/crlf';
+import { lineIndexAtOffset } from '../../../common/text/line-index';
 import type { TokenCounter } from '../token-budget/token-counter';
 import { charTokenEstimate } from '../token-budget/token-counter';
 
@@ -18,6 +19,8 @@ const SWEEP_TEMPLATE_OVERHEAD_TOKENS = 128;
 const SWEEP_MIN_BUDGET_TOKENS = 256;
 // Максимум диагностик в промпте; больше не нужно, остальное шум.
 const MAX_DIAGNOSTICS = 20;
+// Радиус локальной error-диагностики вокруг курсора; этот сигнал чинит текущую правку.
+const CURSOR_ERROR_RADIUS = 3;
 
 // Полный набор данных для построения Sweep-промпта после сбора контекста на фронтенде.
 export interface BuildSweepPromptInput {
@@ -113,7 +116,7 @@ function isWarningSeverity(d: DiagnosticDTO): boolean {
 
 /**
  * Обрезает весь Sweep-контекст в порядке приоритета не трогая обязательную триаду original/current/updated;
- * порядок: errors → recent edits → RAG/related → warnings → outline → output.
+ * порядок: local errors → recent edits → RAG/related → distant errors → warnings → outline → output.
  */
 export function trimSweepContext(input: BuildSweepPromptInput, maxTokens: number): TrimmedSweepContext {
     const profile = input.profile ?? getSweepProfile(input.modelId === 'sweep-small' ? '1.5b' : 'v2-7b');
@@ -154,6 +157,17 @@ export function trimSweepContext(input: BuildSweepPromptInput, maxTokens: number
             warningDiagnostics.push(diagnostic);
         }
     }
+    const cursorDocLine = (input.windowStartLine ?? 0) + lineIndexAtOffset(clamped.text, clamped.cursorOffset);
+    const localErrors: DiagnosticDTO[] = [];
+    const distantErrors: DiagnosticDTO[] = [];
+    for (let i = 0; i < errorDiagnostics.length; i++) {
+        const diagnostic = errorDiagnostics[i];
+        if (Math.abs(diagnostic.range.start.line - cursorDocLine) <= CURSOR_ERROR_RADIUS) {
+            localErrors.push(diagnostic);
+        } else {
+            distantErrors.push(diagnostic);
+        }
+    }
 
     const keptDiagnostics: DiagnosticDTO[] = [];
     // Вспомогательная функция берёт диагностики пока хватает бюджета; вызывается дважды для errors и warnings.
@@ -171,7 +185,7 @@ export function trimSweepContext(input: BuildSweepPromptInput, maxTokens: number
         }
     };
 
-    takeDiagnostics(errorDiagnostics, 'errors');
+    takeDiagnostics(localErrors, 'local-errors');
 
     // История правок сортируется от новейшей к старейшей чтобы при обрезке терялись менее актуальные диффы.
     const editsNewestFirst = input.recentEdits.slice().sort((a, b) => b.timestamp - a.timestamp);
@@ -219,6 +233,7 @@ export function trimSweepContext(input: BuildSweepPromptInput, maxTokens: number
         }
     }
 
+    takeDiagnostics(distantErrors, 'distant-errors');
     takeDiagnostics(warningDiagnostics, 'warnings');
 
     let outline = '';
@@ -264,6 +279,8 @@ export function trimSweepContext(input: BuildSweepPromptInput, maxTokens: number
         recentEditsOut: keptEdits.length,
         diagnosticsIn: diagnosticsCount,
         diagnosticsOut: keptDiagnostics.length,
+        localErrorsIn: localErrors.length,
+        distantErrorsIn: distantErrors.length,
         neighborsIn: input.neighbors?.length ?? 0,
         neighborsOut: keptNeighbors.length,
         relatedIn: input.relatedFiles?.length ?? 0,
