@@ -3,21 +3,18 @@ import { fileURLToPath } from 'url';
 import { injectable, inject } from '@theia/core/shared/inversify';
 import { CancellationToken, Disposable } from '@theia/core/lib/common';
 import { NesBackendService } from '../../common/protocol';
-import { NesConfig, NesRequest, NesResponse, NesResponseStatus } from '../../common/nes-types';
+import { NesConfig, NesRequest, NesResponse } from '../../common/nes-types';
 import { RecentEdit } from '../../common/edit-history-types';
 import type { TextEditDTO } from '../../common/editor-dto';
 import { buildNesPrompt } from '../nes-module/context-formation/builder';
-import type { BuiltNesPrompt } from '../nes-module/context-formation/builder';
 import { buildNesRetrievalQuery } from '../../common/nes-context/retrieval-queries';
 import { LlamaNesClient } from '../nes-module/model-call/llama-nes-client';
 import { parseNesCompletion } from '../nes-module/model-call/response-parser';
 import { normalizeCrlf } from '../util/crlf';
-import { countLines } from '../../common/text/line-index';
 import { getSweepProfile, sweepRequestModelName } from '../../common/sweep/profiles';
 import { SweepConfig, SweepRequest } from '../../common/sweep/types';
 import { SweepBackendService } from '../sweep/sweep-backend-service';
 import { EmbeddingIndexServiceImpl } from './embedding-index-service';
-import { charTokenEstimate } from '../sweep/token-budget/token-counter';
 
 const DEFAULT_SWEEP_PROFILE = getSweepProfile('v2-7b');
 
@@ -53,12 +50,11 @@ export class NesBackendServiceImpl implements NesBackendService {
     }
 
     async predict(request: NesRequest, token?: CancellationToken): Promise<NesResponse> {
-        const startedAt = Date.now();
         if (isSweepModelId(this.config.modelId)) {
             return this.sweep.predict(request as SweepRequest, token);
         }
         if (request.recentEdits.length === 0 || token?.isCancellationRequested) {
-            return this.emptyResponse(request, 'no-edit', request.recentEdits.length === 0 ? 'no-recent-edits' : 'cancelled', startedAt);
+            return this.emptyResponse();
         }
         const abort = bridgeCancellation(token);
         try {
@@ -82,7 +78,7 @@ export class NesBackendServiceImpl implements NesBackendService {
                 contextSize: this.config.contextSize,
             });
             if (prompt.overflow) {
-                return this.emptyResponse(request, 'overflow', 'prompt-overflow', startedAt, prompt);
+                return this.emptyResponse();
             }
             const rawText = await this.client.complete({
                 baseUrl: this.config.llamaUrl,
@@ -95,14 +91,14 @@ export class NesBackendServiceImpl implements NesBackendService {
             });
             const parsed = parseNesCompletion({ rawText, oldWindowText: windowText, windowStart: request.windowStart, stopTokens: prompt.stop });
             if (parsed.edits.length === 0) {
-                return this.emptyResponse(request, 'no-edit', 'no-visible-edit', startedAt, prompt);
+                return this.emptyResponse();
             }
-            return this.successResponse(request, parsed.edits, parsed.primaryRange, parsed.jumpTo, startedAt, prompt);
+            return this.successResponse(parsed.edits, parsed.primaryRange, parsed.jumpTo);
         } catch (error) {
             if (abort.signal.aborted || isAbortError(error)) {
-                return this.emptyResponse(request, 'no-edit', 'cancelled', startedAt);
+                return this.emptyResponse();
             }
-            return this.emptyResponse(request, 'error', error instanceof Error ? error.message : String(error), startedAt);
+            return this.emptyResponse();
         } finally {
             abort.dispose();
         }
@@ -137,55 +133,23 @@ export class NesBackendServiceImpl implements NesBackendService {
         return recentEdits.map(edit => ({ ...edit, uri: this.filePathForUri(edit.uri) }));
     }
 
-    /** Создаёт пустой legacy NES-ответ с meta, чтобы telemetry не зависела от Sweep-only path. */
-    private emptyResponse(request: NesRequest, status: NesResponseStatus, rejectReason: string | undefined, startedAt: number, prompt?: BuiltNesPrompt): NesResponse {
+    /** Создаёт пустой legacy NES-ответ без telemetry wire-format. */
+    private emptyResponse(): NesResponse {
         return {
             edits: [],
             modelId: this.config.modelId,
-            requestId: request.requestId,
-            meta: {
-                status,
-                rejectReason,
-                durationMs: Date.now() - startedAt,
-                promptTokens: prompt ? charTokenEstimate(prompt.prompt) : undefined,
-                tokenMode: 'char-fallback',
-                contextProfile: this.config.modelId,
-                editLineCount: undefined,
-            },
         };
     }
 
-    /** Создаёт успешный legacy NES-ответ и приводит его к общему telemetry wire-format. */
-    private successResponse(request: NesRequest, edits: TextEditDTO[], primaryRange: NesResponse['primaryRange'], jumpTo: NesResponse['jumpTo'], startedAt: number, prompt: BuiltNesPrompt): NesResponse {
+    /** Создаёт успешный legacy NES-ответ только с данными для View Zone renderer. */
+    private successResponse(edits: TextEditDTO[], primaryRange: NesResponse['primaryRange'], jumpTo: NesResponse['jumpTo']): NesResponse {
         return {
             edits,
             primaryRange,
             jumpTo,
             modelId: this.config.modelId,
-            requestId: request.requestId,
-            meta: {
-                status: 'edit',
-                rejectReason: undefined,
-                durationMs: Date.now() - startedAt,
-                promptTokens: charTokenEstimate(prompt.prompt),
-                tokenMode: 'char-fallback',
-                contextProfile: this.config.modelId,
-                editLineCount: editLineCount(edits),
-            },
         };
     }
-}
-
-/** Считает размер legacy NES-правки для единого frontend telemetry snapshot. */
-function editLineCount(edits: TextEditDTO[]): number {
-    let total = 0;
-    for (let i = 0; i < edits.length; i++) {
-        const edit = edits[i];
-        const removed = Math.max(0, edit.range.end.line - edit.range.start.line);
-        const inserted = edit.newText ? countLines(edit.newText) : 0;
-        total += Math.max(removed, inserted);
-    }
-    return total;
 }
 
 function bridgeCancellation(token?: CancellationToken): { signal: AbortSignal; dispose(): void } {

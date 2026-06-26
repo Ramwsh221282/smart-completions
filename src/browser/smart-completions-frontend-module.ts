@@ -18,7 +18,6 @@ import { ScmChangedFilesSource } from './sweep/data-gathering-layer/sources/scm-
 import { SearchRelatedSource } from './sweep/data-gathering-layer/sources/search-source';
 import { SymbolSource } from './sweep/data-gathering-layer/sources/symbol-source';
 import { WorkspaceFiles } from './sweep/data-gathering-layer/sources/workspace-files';
-import { SweepTelemetry } from './sweep/telemetry/sweep-telemetry';
 
 /**
  * Frontend DI-модуль smart-completions.
@@ -44,7 +43,6 @@ export default new ContainerModule(bind => {
     bind(HierarchyRelatedSource).toSelf().inSingletonScope();
     bind(ScmChangedFilesSource).toSelf().inSingletonScope();
     bind(SweepContextCollector).toSelf().inSingletonScope();
-    bind(SweepTelemetry).toSelf().inSingletonScope();
 
     bind(NesViewZoneRenderer).toSelf().inSingletonScope();
     bind(NesController).toSelf().inSingletonScope();

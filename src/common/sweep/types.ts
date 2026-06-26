@@ -2,7 +2,6 @@ import { DiagnosticDTO, PositionDTO, RangeDTO, TextEditDTO } from '../editor-dto
 import { RecentEdit } from '../edit-history-types';
 import { FileMode } from '../mode-types';
 import { NesModelId } from '../model-types';
-import type { NesResponseMeta } from '../nes-types';
 import type { SweepModelProfile } from './profiles';
 
 // Подмножество NesModelId ограниченное Sweep-моделями; нужен для типобезопасного разветвления между sweep-default и sweep-small.
@@ -78,6 +77,4 @@ export interface SweepResponse {
     primaryRange?: RangeDTO;
     jumpTo?: PositionDTO;
     modelId: SweepModelId;
-    requestId: string;
-    meta: NesResponseMeta;
 }

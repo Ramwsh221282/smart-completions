@@ -4,19 +4,16 @@ import { inject, injectable } from '@theia/core/shared/inversify';
 import { CancellationToken, Disposable } from '@theia/core/lib/common';
 import type { TextEditDTO } from '../../common/editor-dto';
 import { RecentEdit } from '../../common/edit-history-types';
-import type { NesResponseStatus } from '../../common/nes-types';
 import { SweepLogger } from '../../common/sweep/logger';
 import { getSweepProfile, sweepRequestModelName } from '../../common/sweep/profiles';
 import { buildSweepRetrievalQuery } from '../../common/sweep/retrieval-queries';
 import { SweepConfig, SweepRequest, SweepResponse } from '../../common/sweep/types';
 import { normalizeCrlf } from '../../common/text/crlf';
-import { countLines } from '../../common/text/line-index';
 import { EmbeddingIndexServiceImpl } from '../services/embedding-index-service';
 import { LlamaSweepClient } from './model-call-layer/llama-sweep-client';
 import { parseSweepCompletion } from './model-call-layer/sweep-response-parser';
 import { SweepSyntaxGate } from './model-call-layer/syntax-gate';
 import { buildSweepPrompt } from './prompt-creating-layer/sweep-prompt-builder';
-import type { BuiltSweepPrompt } from './prompt-creating-layer/sweep-prompt-builder';
 import { QwenTokenCounter } from './token-budget/token-counter';
 
 // Логгер бекенд-оркестратора; нужен для сквозной диагностики полного цикла предсказания от retrieval до парсинга.
@@ -71,7 +68,7 @@ export class SweepBackendService {
         const startedAt = Date.now();
         if (request.recentEdits.length === 0 || token?.isCancellationRequested) {
             LOG.info('Sweep prediction skipped', { reason: request.recentEdits.length === 0 ? 'no recent edits' : 'cancelled' });
-            return this.emptyResponse(request, 'no-edit', request.recentEdits.length === 0 ? 'no-recent-edits' : 'cancelled', startedAt);
+            return this.emptyResponse();
         }
         const abort = bridgeCancellation(token);
         try {
@@ -103,7 +100,7 @@ export class SweepBackendService {
             });
             if (prompt.overflow) {
                 LOG.warn('Sweep prediction skipped because prompt overflowed', { requestId: request.requestId });
-                return this.emptyResponse(request, 'overflow', 'prompt-overflow', startedAt, prompt);
+                return this.emptyResponse();
             }
             const rawText = await this.client.complete({
                 baseUrl: this.config.llamaUrl,
@@ -126,24 +123,24 @@ export class SweepBackendService {
             });
             if (parsed.edits.length === 0) {
                 LOG.info('Sweep prediction completed without visible edit', { requestId: request.requestId, durationMs: Date.now() - startedAt, status: parsed.status, rejectReason: parsed.rejectReason });
-                return this.emptyResponse(request, parsed.status, parsed.rejectReason, startedAt, prompt);
+                return this.emptyResponse();
             }
             if (request.fileMode === 'code' && parsed.updatedWindow) {
                 const delta = await this.syntaxGate.errorDelta(windowText, parsed.updatedWindow, request.languageId);
                 if (delta !== undefined && delta > 0) {
                     LOG.info('Sweep edit rejected by syntax gate', { requestId: request.requestId, delta });
-                    return this.emptyResponse(request, 'rejected', 'syntax-regression', startedAt, prompt);
+                    return this.emptyResponse();
                 }
             }
             LOG.info('Sweep prediction completed', { requestId: request.requestId, durationMs: Date.now() - startedAt, edits: parsed.edits.length });
-            return this.successResponse(request, parsed.edits, parsed.primaryRange, parsed.jumpTo, startedAt, prompt);
+            return this.successResponse(parsed.edits, parsed.primaryRange, parsed.jumpTo);
         } catch (error) {
             if (abort.signal.aborted || isAbortError(error)) {
                 LOG.info('Sweep prediction cancelled', { requestId: request.requestId });
-                return this.emptyResponse(request, 'no-edit', 'cancelled', startedAt);
+                return this.emptyResponse();
             }
             LOG.error('Sweep prediction failed', { requestId: request.requestId, error: error instanceof Error ? error.message : String(error) });
-            return this.emptyResponse(request, 'error', error instanceof Error ? error.message : String(error), startedAt);
+            return this.emptyResponse();
         } finally {
             abort.dispose();
         }
@@ -206,55 +203,23 @@ export class SweepBackendService {
         return out;
     }
 
-    /** Создаёт пустой SweepResponse с полной meta, чтобы frontend telemetry видела все skip/reject/error пути. */
-    private emptyResponse(request: SweepRequest, status: NesResponseStatus, rejectReason: string | undefined, startedAt: number, prompt?: BuiltSweepPrompt): SweepResponse {
+    /** Создаёт пустой SweepResponse без telemetry wire-format для skip/reject/error путей. */
+    private emptyResponse(): SweepResponse {
         return {
             edits: [],
             modelId: this.config.modelId,
-            requestId: request.requestId,
-            meta: {
-                status,
-                rejectReason,
-                durationMs: Date.now() - startedAt,
-                promptTokens: prompt?.promptTokens,
-                tokenMode: prompt?.tokenMode ?? this.tokenCounter.mode,
-                contextProfile: prompt?.contextProfile ?? this.config.profile.id,
-                editLineCount: undefined,
-            },
         };
     }
 
-    /** Создаёт успешный SweepResponse без parser-only полей, оставляя wire-format стабильным для frontend. */
-    private successResponse(request: SweepRequest, edits: TextEditDTO[], primaryRange: SweepResponse['primaryRange'], jumpTo: SweepResponse['jumpTo'], startedAt: number, prompt: BuiltSweepPrompt): SweepResponse {
+    /** Создаёт успешный SweepResponse только с данными, которые нужны View Zone renderer. */
+    private successResponse(edits: TextEditDTO[], primaryRange: SweepResponse['primaryRange'], jumpTo: SweepResponse['jumpTo']): SweepResponse {
         return {
             edits,
             primaryRange,
             jumpTo,
             modelId: this.config.modelId,
-            requestId: request.requestId,
-            meta: {
-                status: 'edit',
-                rejectReason: undefined,
-                durationMs: Date.now() - startedAt,
-                promptTokens: prompt.promptTokens,
-                tokenMode: prompt.tokenMode,
-                contextProfile: prompt.contextProfile,
-                editLineCount: editLineCount(edits),
-            },
         };
     }
-}
-
-/** Считает объём предложенной правки для telemetry без разбора всего diff повторно. */
-function editLineCount(edits: TextEditDTO[]): number {
-    let total = 0;
-    for (let i = 0; i < edits.length; i++) {
-        const edit = edits[i];
-        const removed = Math.max(0, edit.range.end.line - edit.range.start.line);
-        const inserted = edit.newText ? countLines(edit.newText) : 0;
-        total += Math.max(removed, inserted);
-    }
-    return total;
 }
 
 /**

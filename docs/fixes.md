@@ -1,162 +1,264 @@
-# Fix: убрать двойную токенизацию `promptTokens`
+# Спецификация: удаление телеметрии из smart-completions
 
-Устранить лишний полный проход Qwen-токенайзера в `buildSweepPrompt`. Сейчас `promptTokens` считается через `tokenCounter.count(prompt)` по всему собранному промпту, хотя `trimSweepContext` уже посчитал токены по кускам. На горячем пути (каждый predict) это вторая полная токенизация.
+Полностью убрать систему агрегации телеметрии NES (sink, эмиттеры, запись событий, wire-format `meta` в ответе, команды). Разработка соло, проверка на практике — агрегированные метрики не нужны и создают лишний оверхед.
 
-Документ содержит **выбранное** решение (не меню вариантов), с привязкой к реальным строкам кода.
+## Принцип разделения
 
-## Почему нельзя «просто переиспользовать сумму»
+Удаляется **агрегация и передача метрик**, сохраняется **отладочная информация в логах**. Это важная граница: ты проверяешь работу «на опыте», читая консоль-логи. Эти логи (и поля, что их питают) — не оверхед, а твой инструмент отладки. Тесты подтверждают границу: `parsed.status/rejectReason` и `built.promptTokens` покрыты тестами и остаются.
 
-`trimSweepContext` считает токены **сырых кусков** (`window`, `original`, `prefill`, `broad`, каждый neighbor/edit/diagnostic), причём с добавкой `+8` и стоимостью `filePath` на элемент. `count(prompt)` считает **готовый промпт после рендера**, где есть markup, которого в кусках нет: заголовки `<|file_sep|>...:range`, вставленный `<|cursor|>`, переформатирование диффов (`unifiedDiff` → `original:/updated:`), `\n`-джойны секций. Под этот markup в триммере зарезервирована константа `SWEEP_TEMPLATE_OVERHEAD_TOKENS = 128`.
+### Что УДАЛЯЕТСЯ (агрегация + wire-format)
 
-Вывод: точную сумму кусков триммер знает, markup — нет. Корректная оценка = `сумма_кусков + overhead`. Поле `promptTokens` становится **оценкой**, а не точным числом — и это допустимо, потому что оно используется только в telemetry-meta и не управляет логикой.
+- `SweepTelemetry` sink целиком.
+- Эмиттеры `onDidShow/onDidAccept/onDidDismiss` в рендерере + флаг `accepting`.
+- Вызовы `recordPredicted/recordShown/recordAccepted/recordDismissed/recordStale`.
+- Команды `NesTelemetryDumpCommand`, `NesTelemetryResetCommand`.
+- DI-binding `SweepTelemetry`.
+- `NesResponseMeta`, `NesResponseStatus`, поля `meta` и `requestId` в **ответах** (`NesResponse`, `SweepResponse`).
+- `editLineCount`-хелпер и сборка `meta` в backend.
 
-Сумму кусков не нужно аккумулировать отдельно: она равна `budget − remaining`. Триммер стартует `remaining = budget − window − original − prefill` (строка 137) и далее вычитает только kept-куски (строки 145/179/197/213/227/244/256). Поэтому в конце `budget − remaining` = ровно сумма оставленных кусков, включая их `+8`/`filePath` markup.
+### Что СОХРАНЯЕТСЯ (load-bearing / отладка / тесты)
 
-## Выбранное решение
-
-- **Оценка в проде, точность в dev.** Убираем полный `count(prompt)` из горячего пути; в dev оставляем точный счёт + калибровочный лог. Один проход токенайзера в dev (консолидировано), ноль лишних — в проде.
-- **`consumedTokens` через `budget − remaining`** (минимальная правка, без аккумулятора), с комментарием-инвариантом, чтобы будущие правки `remaining` его не сломали.
-- **Имя поля `promptTokens` оставляем**, добавляем doc-комментарий «оценка». Переименование в `estimatedPromptTokens` потянуло бы churn через `BuiltSweepPrompt` → `NesResponseMeta` → telemetry без выигрыша.
+- `isVisible()` в рендерере — используется `nes-priority` (FIM уступает NES).
+- `parsed.updatedWindow` — используется syntax-гейтом.
+- `parsed.status` / `parsed.rejectReason` в `ParsedSweepCompletion` — покрыты тестами, питают backend-логи «почему нет правки».
+- `BuiltSweepPrompt.promptTokens` / `tokenMode` / `contextProfile` — покрыты тестами, питают лог «Sweep prompt built». Твой фикс двойной токенизации остаётся в силе и держит `promptTokens` дешёвым.
+- `requestId` в **запросах** (`NesRequest`, `SweepRequest`) — корреляция backend-логов; не оверхед.
+- Все `LOG.info/debug` — не трогаются.
 
 ---
 
-## Правка 1 — `src/node/sweep/data-formatting-layer/context-trimmer.ts`
+## Правки по файлам
 
-### 1.1 Экспортировать константу (строка 17)
+### 1. УДАЛИТЬ файл целиком
+
+```
+src/browser/sweep/telemetry/sweep-telemetry.ts
+```
+(При желании удалить и пустую директорию `src/browser/sweep/telemetry/`.)
+
+### 2. `src/browser/smart-completions-frontend-module.ts`
+
+Удалить импорт (строка 21) и binding (строка 47):
 
 ```ts
-// было:
-const SWEEP_TEMPLATE_OVERHEAD_TOKENS = 128;
-// стало:
-export const SWEEP_TEMPLATE_OVERHEAD_TOKENS = 128;
+import { SweepTelemetry } from './sweep/telemetry/sweep-telemetry';   // ← удалить
+// ...
+bind(SweepTelemetry).toSelf().inSingletonScope();                     // ← удалить
 ```
 
-### 1.2 Добавить поле в `TrimmedSweepContext`
+### 3. `src/browser/commands.ts`
 
-В конец интерфейса (после `overflow: boolean;`):
+Удалить импорт (строка 8), оба объявления команд (строки 40–47), inject (строка 56) и регистрации (строки 71–75):
 
 ```ts
-export interface TrimmedSweepContext {
-    // ...существующие поля без изменений...
-    prefill: string;
-    overflow: boolean;
-    /**
-     * Сумма токенов оставленных кусков (= budget − remaining).
-     * Инвариант: `remaining` декрементится ТОЛЬКО стоимостью kept-кусков
-     * (window/original/prefill/broad/diagnostics/edits/neighbors/related/outline/output).
-     * Не добавляйте сюда другие резервирования бюджета — иначе значение перестанет
-     * отражать реально потреблённый контекст.
-     */
-    consumedTokens: number;
+import { SweepTelemetry } from './sweep/telemetry/sweep-telemetry';   // ← удалить
+
+export const NesTelemetryDumpCommand: Command = { ... };              // ← удалить блок
+export const NesTelemetryResetCommand: Command = { ... };             // ← удалить блок
+
+@inject(SweepTelemetry) private readonly telemetry!: SweepTelemetry;  // ← удалить
+
+registry.registerCommand(NesTelemetryDumpCommand, { ... });           // ← удалить
+registry.registerCommand(NesTelemetryResetCommand, { ... });          // ← удалить
+```
+
+Проверить: если после удаления inject класс команд больше ничего не инжектит — убрать лишний конструктор/декоратор по ситуации.
+
+### 4. `src/browser/sweep/trigger-layer/sweep-controller.ts`
+
+Удалить импорт (15), поле inject (33–34), три подписки в `onStart` (62–64), `recordPredicted` (199), `recordStale` (202), и поправить лог на строке 208 (он читает `response.meta`).
+
+```ts
+import { SweepTelemetry } from '../telemetry/sweep-telemetry';        // ← удалить
+
+@inject(SweepTelemetry) private readonly telemetry!: SweepTelemetry;  // ← удалить (с комментарием)
+
+// в onStart() — удалить три строки:
+this.toDispose.push(this.renderer.onDidShow(() => this.telemetry.recordShown()));    // ← удалить
+this.toDispose.push(this.renderer.onDidAccept(() => this.telemetry.recordAccepted()));// ← удалить
+this.toDispose.push(this.renderer.onDidDismiss(() => this.telemetry.recordDismissed()));// ← удалить
+
+// в trigger() — удалить:
+this.telemetry.recordPredicted(response);                            // ← удалить (строка 199)
+
+// блок stale упростить: было
+if (source.token.isCancellationRequested || model.getVersionId() !== version) {
+    if (model.getVersionId() !== version) {
+        this.telemetry.recordStale();                                // ← удалить только эту строку
+    }
+    LOG.info('Sweep trigger produced stale edit', { ... });
+    return;
 }
 ```
 
-### 1.3 Вернуть `consumedTokens` (return-блок, строки 293–305)
-
-Добавить поле после `overflow,`:
-
-```ts
-    return {
-        windowText: clamped.text,
-        broadFileText,
-        originalWindowText: originalWindow,
-        cursorOffset: clamped.cursorOffset,
-        recentEdits: keptEdits,
-        neighbors: keptNeighbors,
-        relatedFiles: keptRelated,
-        diagnostics: keptDiagnostics,
-        outline,
-        outputSnippets: keptOutput,
-        prefill,
-        overflow,
-        consumedTokens: budget - remaining,   // NEW
-    };
-```
-
-`budget` (строка 124) и `remaining` (строка 137) уже в скоупе — новых вычислений нет.
-
----
-
-## Правка 2 — `src/node/sweep/prompt-creating-layer/sweep-prompt-builder.ts`
-
-### 2.1 Импорт константы (строка 6)
-
-```ts
-import { trimSweepContext, BuildSweepPromptInput, TrimmedSweepContext, SWEEP_TEMPLATE_OVERHEAD_TOKENS } from '../data-formatting-layer/context-trimmer';
-```
-
-### 2.2 Удалить ставший ненужным импорт
-
-```ts
-import { charTokenEstimate } from '../token-budget/token-counter';   // ← удалить строку
-```
-
-(`charTokenEstimate` использовался только в строке 49, которая ниже заменяется.)
-
-### 2.3 Заменить вычисление `promptTokens` (строка 49)
+Лог на строке 208 (`response.meta.status` / `response.meta.rejectReason` больше не существуют):
 
 ```ts
 // было:
-const promptTokens = input.tokenCounter ? input.tokenCounter.count(prompt) : charTokenEstimate(prompt);
-
+LOG.info('Sweep trigger produced no visible edit', { status: response.meta.status, rejectReason: response.meta.rejectReason, edits: response.edits.length });
 // стало:
-const estimatedPromptTokens = trimmed.consumedTokens + SWEEP_TEMPLATE_OVERHEAD_TOKENS;
-let promptTokens = estimatedPromptTokens;
-if (process.env.NODE_ENV === 'development' && input.tokenCounter) {
-    // Точный счёт ТОЛЬКО в dev: один проход, переиспользуется и для значения, и для калибровки overhead.
-    const exact = input.tokenCounter.count(prompt);
-    LOG.debug('Sweep promptTokens estimate delta', {
-        estimate: estimatedPromptTokens,
-        exact,
-        markupActual: exact - trimmed.consumedTokens,   // фактический markup → калибровка константы 128
-    });
-    promptTokens = exact;
+LOG.info('Sweep trigger produced no visible edit', { edits: response.edits.length });
+```
+(Причина «почему нет правки» по-прежнему логируется на backend-стороне из `parsed.status/rejectReason` — информация не теряется.)
+
+### 5. `src/browser/nes-render/nes-view-zone-renderer.ts`
+
+Удалить `Emitter`-импорт, три эмиттера + event-алиасы (19–26), флаг `accepting`; убрать `fire`-вызовы; упростить `accept()` и `dismiss()`. **Сохранить `isVisible()` и `clear()`.**
+
+```ts
+import { Emitter } from '@theia/core/lib/common';   // ← удалить, если Emitter больше не используется
+```
+
+Удалить поля (строки ~17–26):
+
+```ts
+private accepting = false;                                  // ← удалить
+private readonly onDidShowEmitter = new Emitter<NesResponse>();    // ← удалить
+private readonly onDidAcceptEmitter = new Emitter<NesResponse>();  // ← удалить
+private readonly onDidDismissEmitter = new Emitter<NesResponse>(); // ← удалить
+readonly onDidShow = this.onDidShowEmitter.event;          // ← удалить
+readonly onDidAccept = this.onDidAcceptEmitter.event;      // ← удалить
+readonly onDidDismiss = this.onDidDismissEmitter.event;    // ← удалить
+```
+
+`show()` — удалить строку `this.onDidShowEmitter.fire(response);` (49).
+
+`accept()` — убрать `accepting` и `fire`, оставить применение правки:
+
+```ts
+accept(): void {
+    const editor = this.editor;
+    const response = this.response;
+    if (!editor || !response || response.edits.length === 0) {
+        return;
+    }
+    editor.executeEdits('smart-completions-nes', response.edits.map(toMonacoEdit));
+    if (response.jumpTo) {
+        editor.setPosition(toMonacoPosition(response.jumpTo));
+        editor.revealPositionInCenterIfOutsideViewport(toMonacoPosition(response.jumpTo));
+    }
+    this.clear();
 }
 ```
 
-`tokenMode` оставить как есть (`input.tokenCounter?.mode ?? 'char-fallback'`).
-
-Это убирает полную токенизацию промпта на каждый predict в проде; в dev остаётся ровно один точный проход, который заодно калибрует `SWEEP_TEMPLATE_OVERHEAD_TOKENS`.
-
----
-
-## Правка 3 — doc-комментарии «оценка» (честность поля)
-
-`promptTokens` теперь оценка. Пометить оба объявления, без переименования.
-
-`src/node/sweep/prompt-creating-layer/sweep-prompt-builder.ts`, интерфейс `BuiltSweepPrompt` (строка 26):
+`dismiss()` — убрать `shouldFireDismiss`/`fire`, свести к teardown:
 
 ```ts
-    /** Оценка размера промпта в токенах (consumed + markup overhead); точное значение только в dev. */
-    promptTokens: number;
+dismiss(): void {
+    this.clear();
+}
 ```
 
-`src/common/nes-types.ts`, `NesResponseMeta` (строка 80):
+Оставить без изменений:
 
 ```ts
-    /** Оценка размера промпта в токенах; используется только для telemetry-инспекции. */
-    promptTokens?: number;
+isVisible(): boolean {                       // ← СОХРАНИТЬ (nes-priority)
+    return this.zoneId !== undefined && this.response !== undefined;
+}
+private clear(): void { ... }                // ← СОХРАНИТЬ (поправить комментарий «без telemetry-события» → просто «teardown»)
 ```
 
+### 6. `src/common/nes-types.ts`
+
+Удалить `NesResponseStatus` (72–73), `NesResponseMeta` (75–87), и поля `requestId`/`meta` у `NesResponse` (95–96):
+
+```ts
+export type NesResponseStatus = ...;     // ← удалить
+export interface NesResponseMeta { ... } // ← удалить весь блок
+
+export interface NesResponse {
+    edits: TextEditDTO[];
+    primaryRange?: RangeDTO;
+    jumpTo?: PositionDTO;
+    modelId: string;
+    requestId: string;   // ← удалить
+    meta: NesResponseMeta;// ← удалить
+}
+```
+
+`requestId` на `NesRequest` (строка 47) — **оставить** (используется в логах).
+
+### 7. `src/common/sweep/types.ts`
+
+Удалить импорт `NesResponseMeta` (строка 5) и поля у `SweepResponse` (81–82):
+
+```ts
+import type { NesResponseMeta } from '../nes-types';   // ← удалить
+
+export interface SweepResponse {
+    edits: TextEditDTO[];
+    primaryRange?: RangeDTO;
+    jumpTo?: PositionDTO;
+    modelId: SweepModelId;
+    requestId: string;   // ← удалить
+    meta: NesResponseMeta;// ← удалить
+}
+```
+
+`requestId` на `SweepRequest` (строка 55) — **оставить** (логи).
+
+### 8. `src/node/sweep/sweep-backend-service.ts`
+
+Удалить импорт `NesResponseStatus` (7), упростить `emptyResponse`/`successResponse`, удалить `editLineCount`-хелпер. **Сохранить syntax-гейт и логи** (они читают `parsed.status/rejectReason`/`updatedWindow`).
+
+```ts
+import type { NesResponseStatus } from '../../common/nes-types';   // ← удалить
+```
+
+`emptyResponse` — свести к минимуму (статус/причина больше не нужны как параметры, они уже в логах вызывающих мест):
+
+```ts
+private emptyResponse(): SweepResponse {
+    return { edits: [], modelId: this.config.modelId };
+}
+```
+
+Обновить все вызовы `emptyResponse(...)` → `this.emptyResponse()` (строки ~74, 106, 129, 135, 143, 146). Логи рядом с ними уже содержат `requestId/durationMs/status/rejectReason` из `parsed` — их не трогать.
+
+`successResponse` — убрать `requestId`/`meta`/`prompt`/`startedAt`:
+
+```ts
+private successResponse(edits: TextEditDTO[], primaryRange: SweepResponse['primaryRange'], jumpTo: SweepResponse['jumpTo']): SweepResponse {
+    return { edits, primaryRange, jumpTo, modelId: this.config.modelId };
+}
+```
+Обновить вызов: `return this.successResponse(parsed.edits, parsed.primaryRange, parsed.jumpTo);`
+
+Удалить хелпер `editLineCount` (строки ~248+) целиком.
+
+**Не трогать:** блок syntax-гейта (`request.fileMode === 'code' && parsed.updatedWindow` → `errorDelta`), все `LOG.info` с `requestId/status/rejectReason`.
+
+### 9. `src/node/services/nes-backend-service.ts` (legacy Zeta-путь)
+
+Тот же паттерн: удалить импорт `NesResponseStatus` (6), упростить `emptyResponse` (141) и `successResponse` (158) — убрать `requestId`/`meta`, удалить локальный `editLineCount`-хелпер (179). Вернуть `{ edits: [], modelId }` и `{ edits, primaryRange, jumpTo, modelId }` соответственно.
+
 ---
 
-## Калибровка константы (как пользоваться)
+## Тесты
 
-После внедрения, в dev-режиме лог `Sweep promptTokens estimate delta` показывает `markupActual` — фактический markup (триада + диффы + cursor + джойны) на каждый промпт. Если `markupActual` стабильно заметно больше/меньше 128 — поправить `SWEEP_TEMPLATE_OVERHEAD_TOKENS`. Это самонастройка оверхеда под реальный training-формат, почти бесплатно.
+Текущие ассерты остаются валидными благодаря сохранённым полям:
+
+- `test/nes-response-parser.test.ts` — проверяет `parsed.status`/`parsed.rejectReason`. **Сохраняются** (поля `ParsedSweepCompletion` не трогаем). Тест зелёный.
+- `test/nes-prompt.test.ts` — проверяет `built.promptTokens`. **Сохраняется** (`BuiltSweepPrompt.promptTokens` не трогаем). Тест зелёный.
+
+Дополнительно проверить (safety): `grep -rn "\.meta\b\|response.requestId\|NesResponseMeta\|NesResponseStatus\|SweepTelemetry" test/` — если где-то ассертится `response.meta`/`response.requestId`, удалить эти строки. По текущему коду таких ассертов в тестах нет.
 
 ---
 
-## Проверка после внедрения
+## Проверка после удаления
 
-- `tsc -b` проходит без ошибок; `charTokenEstimate` больше не импортируется в билдере (иначе TS-предупреждение о неиспользуемом импорте).
-- Прод (`NODE_ENV !== 'development'`): `tokenCounter.count(prompt)` **не вызывается** в `buildSweepPrompt`; токенайзер на горячем пути работает только внутри триммера по кускам.
-- Dev: лог `Sweep promptTokens estimate delta` присутствует, `exact` считается **один раз**.
-- `promptTokens` в `NesResponseMeta` остаётся числом (оценка), telemetry-snapshot не ломается.
-- `trimmed.consumedTokens` ≥ 0 в норме; при overflow может превышать `budget` (remaining < 0) — это корректно отражает переразмер.
+- `npx tsc -b` проходит без ошибок (особое внимание — неиспользуемые импорты `Emitter`, `NesResponseStatus`, `NesResponseMeta`, `SweepTelemetry`).
+- `grep -rn "Telemetry\|recordPredicted\|recordShown\|onDidShow\|onDidAccept\|onDidDismiss\|NesResponseMeta\|NesResponseStatus\|\.meta\b" src/` — пусто (кроме несвязанного `repo-indexer` `this.meta` — это индекс embedding-ов, НЕ телеметрия, не трогать).
+- Команды `smart-completions.nes.telemetry.*` исчезли из палитры.
+- `nes-priority` работает: `isVisible()` на месте, FIM по-прежнему уступает видимой NES-подсказке.
+- Syntax-гейт работает: `parsed.updatedWindow` на месте.
+- Backend-логи «почему нет правки» сохранены (читают `parsed.status/rejectReason`).
+- `node --test` — `nes-response-parser` и `nes-prompt` зелёные.
 
-## Что НЕ меняется
+## Взаимодействие с фиксом двойной токенизации
 
-- Логика trimming, дедупа, syntax-гейта, telemetry-воронки — не затрагивается.
-- `tokenMode`, `contextProfile`, `overflow` в `BuiltSweepPrompt` — без изменений.
-- Поведение бюджета и решений триммера — идентично (используется тот же `remaining`, просто дополнительно возвращается его производная).
-- Backend `emptyResponse`/`successResponse` читают `prompt.promptTokens` как раньше — сигнатура поля не меняется.
+Фикс `promptTokens` (commit f3a8648) **остаётся в силе и осмысленным**: `promptTokens` сохраняется как поле `BuiltSweepPrompt` для лога «Sweep prompt built» и покрыт тестом. Удаление телеметрии лишь перестаёт класть его в `response.meta` — само поле и его дешёвый расчёт остаются. Твоя работа не пропадает.
+
+## Что НЕ затрагивается
+
+Профили, дедуп, syntax-гейт, trimming, prefill, reconstruction, decoding, prose-режим, оффлайн-токенизатор, redaction, cross-file edits — без изменений. Удаляется исключительно слой агрегации телеметрии и его wire-format в ответе.

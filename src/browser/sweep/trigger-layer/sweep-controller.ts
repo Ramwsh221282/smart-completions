@@ -12,7 +12,6 @@ import { readNesConfig } from '../../preferences/preferences-schema';
 import { SweepContextCollector } from '../data-gathering-layer/sweep-context-collector';
 import { SweepEditHistoryRecorder } from '../data-gathering-layer/sweep-edit-history-recorder';
 import { SweepRequestBuilder } from '../data-formatting-layer/sweep-request-builder';
-import { SweepTelemetry } from '../telemetry/sweep-telemetry';
 
 // Логгер триггерного слоя Sweep на фронтенде.
 const LOG = new SweepLogger('browser:trigger');
@@ -30,8 +29,6 @@ export class SweepController implements FrontendApplicationContribution, Disposa
     @inject(NesViewZoneRenderer) private readonly renderer!: NesViewZoneRenderer;
     // Сборщик контекста из Theia-источников (LSP, SCM, output и др.).
     @inject(SweepContextCollector) private readonly collector!: SweepContextCollector;
-    // Frontend telemetry агрегирует predicted/shown/accepted/dismissed для оценки качества NES.
-    @inject(SweepTelemetry) private readonly telemetry!: SweepTelemetry;
 
     // Корневой DisposableCollection для подписок уровня приложения.
     private readonly toDispose = new DisposableCollection();
@@ -59,9 +56,6 @@ export class SweepController implements FrontendApplicationContribution, Disposa
      */
     async onStart(): Promise<void> {
         await this.pushConfig();
-        this.toDispose.push(this.renderer.onDidShow(() => this.telemetry.recordShown()));
-        this.toDispose.push(this.renderer.onDidAccept(() => this.telemetry.recordAccepted()));
-        this.toDispose.push(this.renderer.onDidDismiss(() => this.telemetry.recordDismissed()));
         for (const editor of monaco.editor.getEditors()) {
             this.trackEditor(editor);
         }
@@ -196,16 +190,12 @@ export class SweepController implements FrontendApplicationContribution, Disposa
             }
             const request = this.requestBuilder.request(model, snapshot, collected);
             const response = await this.nes.predict(request, source.token);
-            this.telemetry.recordPredicted(response);
             if (source.token.isCancellationRequested || model.getVersionId() !== version) {
-                if (model.getVersionId() !== version) {
-                    this.telemetry.recordStale();
-                }
                 LOG.info('Sweep trigger produced stale edit', { cancelled: source.token.isCancellationRequested, versionChanged: model.getVersionId() !== version, edits: response.edits.length });
                 return;
             }
             if (response.edits.length === 0) {
-                LOG.info('Sweep trigger produced no visible edit', { status: response.meta.status, rejectReason: response.meta.rejectReason, edits: response.edits.length });
+                LOG.info('Sweep trigger produced no visible edit', { edits: response.edits.length });
                 return;
             }
             this.renderer.show(editor, response);
