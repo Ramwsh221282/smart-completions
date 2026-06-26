@@ -4,3 +4,9 @@ lib-test/
 *.tsbuildinfo
 *.vsix
 graphify-out/
+.opencode/
+.opencode
+opencode.json
+biome.json
+graphify-out/
+graphify-out
