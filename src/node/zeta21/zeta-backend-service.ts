@@ -197,6 +197,8 @@ export class ZetaBackendService {
     private emptyResponse(): ZetaResponse {
         return {
             edits: [],
+            primaryRange: null,
+            jumpTo: null,
             modelId: ZETA_PROFILE.id,
         };
     }

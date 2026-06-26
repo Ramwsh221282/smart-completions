@@ -25,8 +25,8 @@ export interface ParseZetaCompletionInput {
 // Результат парсинга содержит edits готовые для View Zone renderer и first edit coordinates для jump/accept UX.
 export interface ParsedZetaCompletion {
     edits: TextEditDTO[];
-    primaryRange?: RangeDTO;
-    jumpTo?: PositionDTO;
+    primaryRange: RangeDTO | null;
+    jumpTo: PositionDTO | null;
     status: 'edit' | 'no-edit' | 'rejected';
     rejectReason: string | null;
 }
@@ -37,10 +37,10 @@ export function parseZetaCompletion(input: ParseZetaCompletionInput): ParsedZeta
     const byMarker = extractRegionContents(cleaned);
     if (byMarker.size === 0) {
         LOG.info('Zeta response parsed as no-op because no valid marker pairs were found');
-        return { edits: [], status: 'no-edit', rejectReason: null };
+        return { edits: [], primaryRange: null, jumpTo: null, status: 'no-edit', rejectReason: null };
     }
     const edits: TextEditDTO[] = [];
-    let primaryRange: RangeDTO | undefined;
+    let primaryRange: RangeDTO | null = null;
     let rejected = 0;
     for (let i = 0; i < input.regions.length; i++) {
         const region = input.regions[i];
@@ -60,15 +60,15 @@ export function parseZetaCompletion(input: ParseZetaCompletionInput): ParsedZeta
         }
         const edit = buildEdit(input.windowText, input.windowStart, region, cleanRevised);
         edits.push(edit);
-        if (primaryRange === undefined) {
+        if (primaryRange === null) {
             primaryRange = edit.range;
         }
     }
     LOG.info('Zeta response parsed', { markerPairs: byMarker.size, edits: edits.length, rejected });
     if (edits.length === 0) {
-        return { edits: [], status: rejected > 0 ? 'rejected' : 'no-edit', rejectReason: rejected > 0 ? 'region-rejected' : null };
+        return { edits: [], primaryRange: null, jumpTo: null, status: rejected > 0 ? 'rejected' : 'no-edit', rejectReason: rejected > 0 ? 'region-rejected' : null };
     }
-    return { edits, primaryRange, jumpTo: primaryRange?.start, status: 'edit', rejectReason: null };
+    return { edits, primaryRange, jumpTo: primaryRange ? primaryRange.start : null, status: 'edit', rejectReason: null };
 }
 
 function extractRegionContents(text: string): Map<number, string> {

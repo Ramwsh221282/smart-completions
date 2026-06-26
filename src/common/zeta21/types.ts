@@ -51,8 +51,8 @@ export interface ZetaConfig {
 // Zeta response не зависит от renderer-деталей и отдаёт только список правок плюс primary range для навигации.
 export interface ZetaResponse {
     edits: TextEditDTO[];
-    primaryRange?: RangeDTO;
-    jumpTo?: PositionDTO;
+    primaryRange: RangeDTO | null;
+    jumpTo: PositionDTO | null;
     modelId: string;
 }
 

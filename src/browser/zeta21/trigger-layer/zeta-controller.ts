@@ -4,6 +4,7 @@ import { PreferenceChange, PreferenceService } from '@theia/core/lib/common/pref
 import { inject, injectable } from '@theia/core/shared/inversify';
 import * as monaco from '@theia/monaco-editor-core';
 import type { CoordinationMode } from '../../../common/model-types';
+import type { NesResponse } from '../../../common/nes-types';
 import { ZetaBackendService } from '../../../common/protocol';
 import type { ZetaConfig } from '../../../common/zeta21/types';
 import { ZetaLogger } from '../../../common/zeta21/logger';
@@ -109,7 +110,8 @@ export class ZetaController implements FrontendApplicationContribution, Disposab
         if (this.coordinationMode === 'exclusive-priority' && Date.now() - this.lastChangeAt < this.config.debounceMs) {
             return;
         }
-        const snapshot = this.requestBuilder.snapshot(model, position, this.history);
+        const diagnostics = collectDiagnostics(model);
+        const snapshot = await this.requestBuilder.snapshot(model, position, this.history, diagnostics);
         if (!snapshot) {
             return;
         }
@@ -142,7 +144,7 @@ export class ZetaController implements FrontendApplicationContribution, Disposab
             if (response.edits.length === 0) {
                 return;
             }
-            this.renderer.show(editor, response);
+            this.renderer.show(editor, toRendererResponse(response));
             LOG.info('Zeta suggestion rendered', { edits: response.edits.length, modelId: response.modelId });
         } catch (error) {
             LOG.warn('Zeta trigger failed', { error: error instanceof Error ? error.message : String(error) });
@@ -177,4 +179,40 @@ export class ZetaController implements FrontendApplicationContribution, Disposab
     private isActiveModel(): boolean {
         return this.preferences.get<string>('smart-completions.nes.modelId', 'sweep-default') === 'zeta-2.1';
     }
+}
+
+function toRendererResponse(response: Awaited<ReturnType<ZetaBackendService['predict']>>): NesResponse {
+    return {
+        edits: response.edits,
+        primaryRange: response.primaryRange ?? undefined,
+        jumpTo: response.jumpTo ?? undefined,
+        modelId: response.modelId,
+    };
+}
+
+function collectDiagnostics(model: monaco.editor.ITextModel): import('../../../common/editor-dto').DiagnosticDTO[] {
+    const markers = monaco.editor.getModelMarkers({ resource: model.uri, take: 20 });
+    const diagnostics = new Array<import('../../../common/editor-dto').DiagnosticDTO>(markers.length);
+    for (let i = 0; i < markers.length; i++) {
+        const marker = markers[i];
+        diagnostics[i] = {
+            range: {
+                start: { line: marker.startLineNumber - 1, character: marker.startColumn - 1 },
+                end: { line: marker.endLineNumber - 1, character: marker.endColumn - 1 },
+            },
+            severity: marker.severity === monaco.MarkerSeverity.Error
+                ? 'error' as const
+                : marker.severity === monaco.MarkerSeverity.Warning
+                    ? 'warning' as const
+                    : marker.severity === monaco.MarkerSeverity.Info
+                        ? 'info' as const
+                        : 'hint' as const,
+            message: marker.message,
+            code: marker.code ? String(marker.code) : undefined,
+        };
+    }
+    if (process.env.NODE_ENV === 'development') {
+        LOG.debug('Zeta diagnostics collected from Monaco', { uri: model.uri.toString(), diagnostics: diagnostics.length });
+    }
+    return diagnostics;
 }

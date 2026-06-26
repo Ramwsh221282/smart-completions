@@ -1,4 +1,4 @@
-import * as monaco from '@theia/monaco-editor-core';
+import type * as monaco from '@theia/monaco-editor-core';
 import type { DiagnosticDTO } from '../../../common/editor-dto';
 import type { RecentEdit } from '../../../common/edit-history-types';
 import { fileModeForLanguage } from '../../shared/file-mode';
@@ -6,7 +6,7 @@ import { buildRegions } from '../../../common/zeta21/markers';
 import type { ZetaEditableRegion, ZetaRequest } from '../../../common/zeta21/types';
 import { ZetaLogger } from '../../../common/zeta21/logger';
 import type { CollectedZetaContext } from '../data-gathering-layer/zeta-context-collector';
-import { ZetaEditHistoryRecorder } from '../data-gathering-layer/zeta-edit-history-recorder';
+import { ZetaSyntaxRegionResolver, type ResolvedSyntaxWindow } from './zeta-syntax-region-resolver';
 
 // Логгер строителя запросов нужен для диагностики того, что именно попало в финальный RPC-запрос zeta21.
 const LOG = new ZetaLogger('browser:data-formatting:request-builder');
@@ -23,10 +23,22 @@ export interface ZetaEditorSnapshot {
     diagnostics: DiagnosticDTO[];
 }
 
+// История правок нужна request builder только для чтения свежих diff-ов; отдельный интерфейс не привязывает builder к concrete recorder-реализации.
+export interface ZetaRecentEditHistory {
+    getRecentEdits(uri?: string, limit?: number): RecentEdit[];
+}
+
+// Resolver-абстракция позволяет тестировать builder без реального browser tree-sitter runtime.
+export interface ZetaSyntaxWindowResolver {
+    resolve(model: monaco.editor.ITextModel, position: monaco.Position, diagnostics: DiagnosticDTO[]): Promise<ResolvedSyntaxWindow | undefined>;
+}
+
 /** Строит снимок редактора до сбора контекста и финальный RPC-запрос после, разделяя две фазы zeta21 trigger-потока. */
 export class ZetaRequestBuilder {
+    constructor(private readonly syntaxResolver: ZetaSyntaxWindowResolver = new ZetaSyntaxRegionResolver()) {}
+
     /** Фиксирует состояние редактора в момент trigger и останавливает цикл если обязательная история правок пока пуста. */
-    snapshot(model: monaco.editor.ITextModel, position: monaco.Position, history: ZetaEditHistoryRecorder): ZetaEditorSnapshot | undefined {
+    async snapshot(model: monaco.editor.ITextModel, position: monaco.Position, history: ZetaRecentEditHistory, diagnostics: DiagnosticDTO[]): Promise<ZetaEditorSnapshot | undefined> {
         const uri = model.uri.toString();
         const recentEdits = history.getRecentEdits(uri, 8);
         if (recentEdits.length === 0) {
@@ -34,27 +46,27 @@ export class ZetaRequestBuilder {
             return undefined;
         }
         const fileMode = fileModeForLanguage(model.getLanguageId());
-        const region = fileMode === 'prose' ? editorParagraph(model, position) : editorLine(model, position);
-        const fullText = model.getValue();
-        const prefixText = fullText.slice(0, region.startOffset);
-        const suffixText = fullText.slice(region.endOffset);
-        const regions = buildRegions({ windowText: region.text, cursorOffset: region.cursorOffset, syntacticBounds: null });
-        const diagnostics = collectDiagnostics(model);
+        const syntaxWindow = fileMode === 'code'
+            ? await this.syntaxResolver.resolve(model, position, diagnostics)
+            : undefined;
+        const region = syntaxWindow ?? (fileMode === 'prose' ? editorParagraph(model, position) : editorLine(model, position));
+        const regions = buildRegions({ windowText: region.windowText, cursorOffset: region.cursorOffset, syntacticBounds: region.syntacticBounds });
         LOG.info('Zeta editor snapshot captured', {
             uri,
             fileMode,
-            prefixChars: prefixText.length,
-            windowChars: region.text.length,
-            suffixChars: suffixText.length,
+            syntaxExpanded: syntaxWindow !== undefined,
+            prefixChars: region.prefixText.length,
+            windowChars: region.windowText.length,
+            suffixChars: region.suffixText.length,
             regions: regions.length,
             recentEdits: recentEdits.length,
             diagnostics: diagnostics.length,
         });
         return {
-            prefixText,
-            windowText: region.text,
-            suffixText,
-            windowStart: region.start,
+            prefixText: region.prefixText,
+            windowText: region.windowText,
+            suffixText: region.suffixText,
+            windowStart: region.windowStart,
             cursorOffset: region.cursorOffset,
             regions,
             recentEdits,
@@ -92,24 +104,25 @@ export class ZetaRequestBuilder {
     }
 }
 
-function editorLine(model: monaco.editor.ITextModel, position: monaco.Position): { text: string; start: { line: number; character: number }; cursorOffset: number; startOffset: number; endOffset: number } {
+function editorLine(model: monaco.editor.ITextModel, position: monaco.Position): ResolvedSyntaxWindow {
     const startLineNumber = position.lineNumber;
     const endLineNumber = position.lineNumber;
     const start = { lineNumber: startLineNumber, column: 1 };
     const end = { lineNumber: endLineNumber, column: model.getLineMaxColumn(endLineNumber) };
-    const text = model.getValueInRange({ startLineNumber, startColumn: 1, endLineNumber, endColumn: end.column });
+    const fullText = model.getValue();
     const startOffset = model.getOffsetAt(start);
     const endOffset = model.getOffsetAt(end);
     return {
-        text,
-        start: { line: startLineNumber - 1, character: 0 },
+        windowText: fullText.slice(startOffset, endOffset),
+        windowStart: { line: startLineNumber - 1, character: 0 },
         cursorOffset: model.getOffsetAt(position) - startOffset,
-        startOffset,
-        endOffset,
+        prefixText: fullText.slice(0, startOffset),
+        suffixText: fullText.slice(endOffset),
+        syntacticBounds: null,
     };
 }
 
-function editorParagraph(model: monaco.editor.ITextModel, position: monaco.Position): { text: string; start: { line: number; character: number }; cursorOffset: number; startOffset: number; endOffset: number } {
+function editorParagraph(model: monaco.editor.ITextModel, position: monaco.Position): ResolvedSyntaxWindow {
     let startLineNumber = position.lineNumber;
     let endLineNumber = position.lineNumber;
     while (startLineNumber > 1 && !isBlankLine(model, startLineNumber - 1)) {
@@ -120,45 +133,19 @@ function editorParagraph(model: monaco.editor.ITextModel, position: monaco.Posit
     }
     const start = { lineNumber: startLineNumber, column: 1 };
     const end = { lineNumber: endLineNumber, column: model.getLineMaxColumn(endLineNumber) };
-    const text = model.getValueInRange({ startLineNumber, startColumn: 1, endLineNumber, endColumn: end.column });
+    const fullText = model.getValue();
     const startOffset = model.getOffsetAt(start);
     const endOffset = model.getOffsetAt(end);
     return {
-        text,
-        start: { line: startLineNumber - 1, character: 0 },
+        windowText: fullText.slice(startOffset, endOffset),
+        windowStart: { line: startLineNumber - 1, character: 0 },
         cursorOffset: model.getOffsetAt(position) - startOffset,
-        startOffset,
-        endOffset,
+        prefixText: fullText.slice(0, startOffset),
+        suffixText: fullText.slice(endOffset),
+        syntacticBounds: null,
     };
 }
 
 function isBlankLine(model: monaco.editor.ITextModel, lineNumber: number): boolean {
     return model.getLineContent(lineNumber).trim().length === 0;
-}
-
-function collectDiagnostics(model: monaco.editor.ITextModel): DiagnosticDTO[] {
-    const markers = monaco.editor.getModelMarkers({ resource: model.uri, take: 20 });
-    const diagnostics = new Array<DiagnosticDTO>(markers.length);
-    for (let i = 0; i < markers.length; i++) {
-        const marker = markers[i];
-        diagnostics[i] = {
-            range: {
-                start: { line: marker.startLineNumber - 1, character: marker.startColumn - 1 },
-                end: { line: marker.endLineNumber - 1, character: marker.endColumn - 1 },
-            },
-            severity: marker.severity === monaco.MarkerSeverity.Error
-                ? 'error' as const
-                : marker.severity === monaco.MarkerSeverity.Warning
-                    ? 'warning' as const
-                    : marker.severity === monaco.MarkerSeverity.Info
-                        ? 'info' as const
-                        : 'hint' as const,
-            message: marker.message,
-            code: marker.code ? String(marker.code) : undefined,
-        };
-    }
-    if (process.env.NODE_ENV === 'development') {
-        LOG.debug('Zeta diagnostics collected from Monaco', { uri: model.uri.toString(), diagnostics: diagnostics.length });
-    }
-    return diagnostics;
 }
