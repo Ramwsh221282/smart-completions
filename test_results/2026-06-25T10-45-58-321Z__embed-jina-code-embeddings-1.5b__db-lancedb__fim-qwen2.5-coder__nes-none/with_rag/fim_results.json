@@ -1,0 +1,9 @@
+{
+  "modelId": "qwen2.5-coder",
+  "neighbors": [
+    "pricing.ts",
+    "pricing.ts",
+    "pricing.ts"
+  ],
+  "completion": "total * factor;\n}\n\nexport function formatPrice(amount: number, currency: Currency): string {\n    return `${currency} ${amount.toFixed(2)}`;"
+}

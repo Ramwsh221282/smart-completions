@@ -1,0 +1,108 @@
+{
+  "runId": "2026-06-25T17-42-35-487Z",
+  "embedModel": "granite",
+  "embedDim": 768,
+  "vectorDb": "lancedb",
+  "filesIndexed": 6,
+  "indexMs": 729,
+  "invariants": [
+    {
+      "name": "index ready",
+      "ok": true
+    },
+    {
+      "name": "files indexed > 0",
+      "ok": true,
+      "detail": "filesIndexed=6"
+    },
+    {
+      "name": "retrieval returns neighbors",
+      "ok": true
+    },
+    {
+      "name": "NES no_rag: prompt not overflow",
+      "ok": true
+    },
+    {
+      "name": "NES no_rag: original/current/updated triad is last",
+      "ok": true,
+      "detail": "original/user-service.ts:1:20 | current/user-service.ts:1:20 | updated/user-service.ts:1:20"
+    },
+    {
+      "name": "NES no_rag: no legacy sweep sections",
+      "ok": true
+    },
+    {
+      "name": "NES no_rag: outline pseudo-file present",
+      "ok": true
+    },
+    {
+      "name": "NES no_rag: related file block present",
+      "ok": true
+    },
+    {
+      "name": "NES no_rag: output pseudo-file present and sanitized",
+      "ok": true
+    },
+    {
+      "name": "NES no_rag: zone B sits before the triad",
+      "ok": true
+    },
+    {
+      "name": "NES no_rag: edit ranges inside window",
+      "ok": true
+    },
+    {
+      "name": "NES no_rag: no marker leak",
+      "ok": true
+    },
+    {
+      "name": "NES with_rag: diff-query found cross-file dependency",
+      "ok": true,
+      "detail": "types.ts,types.ts,user-service.ts,order-service.ts,user-repository.ts"
+    },
+    {
+      "name": "NES with_rag: prompt not overflow",
+      "ok": true
+    },
+    {
+      "name": "NES with_rag: original/current/updated triad is last",
+      "ok": true,
+      "detail": "original/user-service.ts:1:20 | current/user-service.ts:1:20 | updated/user-service.ts:1:20"
+    },
+    {
+      "name": "NES with_rag: no legacy sweep sections",
+      "ok": true
+    },
+    {
+      "name": "NES with_rag: outline pseudo-file present",
+      "ok": true
+    },
+    {
+      "name": "NES with_rag: related file block present",
+      "ok": true
+    },
+    {
+      "name": "NES with_rag: output pseudo-file present and sanitized",
+      "ok": true
+    },
+    {
+      "name": "NES with_rag: zone B sits before the triad",
+      "ok": true
+    },
+    {
+      "name": "NES with_rag: edit ranges inside window",
+      "ok": true
+    },
+    {
+      "name": "NES with_rag: no marker leak",
+      "ok": true
+    }
+  ],
+  "quality": {
+    "nes_no_rag_edit": "        return user ? user.displayName : 'unknown';\n    }\n\n    listEmails(): string[] {\n        return this.repository.all().map(user => user.email);\n    }\n}",
+    "nes_no_rag_edits_count": 1,
+    "nes_with_rag_edit": "        return user ? user.displayName : 'unknown';\n    }\n\n    listEmails(): string[] {\n        return this.repository.all().map(user => user.email);\n    }\n}",
+    "nes_with_rag_edits_count": 1
+  }
+}

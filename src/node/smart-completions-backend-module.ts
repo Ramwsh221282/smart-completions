@@ -1,0 +1,50 @@
+import { ContainerModule } from '@theia/core/shared/inversify';
+import { ConnectionHandler, RpcConnectionHandler } from '@theia/core/lib/common/messaging';
+import {
+    FimBackendService,
+    FIM_SERVICE_PATH,
+    NesBackendService,
+    NES_SERVICE_PATH,
+    EmbeddingIndexService,
+    EmbeddingIndexClient,
+    EMBEDDING_SERVICE_PATH,
+} from '../common/protocol';
+import { EmbeddingIndexServiceImpl } from './services/embedding-index-service';
+import { FimBackendServiceImpl } from './services/fim-backend-service';
+import { NesBackendServiceImpl } from './services/nes-backend-service';
+import { SweepBackendService } from './sweep/sweep-backend-service';
+
+/**
+ * Backend DI-модуль smart-completions.
+ * Регистрирует RPC-сервисы FIM/NES-инференса и индексирования embedding-контекста.
+ */
+export default new ContainerModule(bind => {
+    bind(FimBackendServiceImpl).toSelf().inSingletonScope();
+    bind(FimBackendService).toService(FimBackendServiceImpl);
+
+    bind(NesBackendServiceImpl).toSelf().inSingletonScope();
+    bind(NesBackendService).toService(NesBackendServiceImpl);
+    bind(SweepBackendService).toSelf().inSingletonScope();
+
+    bind(EmbeddingIndexServiceImpl).toSelf().inSingletonScope();
+    bind(EmbeddingIndexService).toService(EmbeddingIndexServiceImpl);
+
+    bind(ConnectionHandler)
+        .toDynamicValue(ctx => new RpcConnectionHandler(FIM_SERVICE_PATH, () => ctx.container.get(FimBackendServiceImpl)))
+        .inSingletonScope();
+
+    bind(ConnectionHandler)
+        .toDynamicValue(ctx => new RpcConnectionHandler(NES_SERVICE_PATH, () => ctx.container.get(NesBackendServiceImpl)))
+        .inSingletonScope();
+
+    bind(ConnectionHandler)
+        .toDynamicValue(
+            ctx =>
+                new RpcConnectionHandler<EmbeddingIndexClient>(EMBEDDING_SERVICE_PATH, client => {
+                    const service = ctx.container.get(EmbeddingIndexServiceImpl);
+                    service.setClient(client);
+                    return service;
+                }),
+        )
+        .inSingletonScope();
+});

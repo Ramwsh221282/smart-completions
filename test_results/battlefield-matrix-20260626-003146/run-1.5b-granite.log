@@ -1,0 +1,483 @@
+TAP version 13
+# [Sweep:common:outline] Sweep heuristic outline extracted { roots: 1, lines: 20 }
+# [Sweep:common:outline] Sweep outline formatted { symbols: 1, cursorLine: 12, chars: 49, marked: 'UserService' }
+# [Sweep:common:output-filter] Sweep output snippet extracted { scanned: 5, selected: 5, chars: 156 }
+# [Sweep:node:data-formatting:context-trimmer] Sweep context trimmed {
+#   modelId: 'sweep-small',
+#   contextSize: 8000,
+#   maxTokens: 256,
+#   budget: 30464,
+#   remaining: 28776,
+#   overflow: false,
+#   windowChars: 524,
+#   originalChars: 524,
+#   recentEditsIn: 1,
+#   recentEditsOut: 1,
+#   diagnosticsIn: 1,
+#   diagnosticsOut: 1,
+#   neighborsIn: 0,
+#   neighborsOut: 0,
+#   relatedIn: 1,
+#   relatedOut: 1,
+#   outlineChars: 49,
+#   outputOut: 1
+# }
+# [Sweep:node:data-formatting:file-blocks] Sweep RAG file blocks formatted { neighbors: 0, blocks: 0 }
+# [Sweep:node:data-formatting:file-blocks] Sweep related file blocks formatted { relatedFiles: 1, blocks: 1 }
+# [Sweep:node:data-formatting:diagnostics-format] Sweep diagnostics pseudo-file formatted { diagnostics: 1, chars: 59 }
+# [Sweep:node:data-formatting:diff-blocks] Sweep diff blocks formatted { edits: 1, blocks: 1 }
+# [Sweep:node:prompt-creating] Sweep prompt built {
+#   modelId: 'sweep-small',
+#   llamaModel: 'sweep-next-edit-small',
+#   maxTokens: 256,
+#   overflow: false,
+#   blocks: 8,
+#   range: '1:20',
+#   promptChars: 1873,
+#   neighbors: 0,
+#   relatedFiles: 1,
+#   recentEdits: 1,
+#   diagnostics: 1,
+#   hasOutline: true,
+#   outputSnippets: 1
+# }
+# [Sweep:node:prompt-creating] training-format prompt { modelId: 'sweep-small', range: '1:20', promptChars: 1873 }
+# [Sweep:node:prompt-creating] training-format prompt text:
+# <|file_sep|>types.ts
+# export interface User {
+#     id: string;
+#     displayName: string;
+#     email: string;
+# }
+# <|file_sep|>outline/user-service.ts
+# UserService [4-19] <-- cursor
+#   constructor [5-5]
+# <|file_sep|>diagnostics/user-service.ts
+# Line 12: Property 'fullName' does not exist on type 'User'.
+# <|file_sep|>output/build
+# starting tsc
+# src/user-service.ts:13:21 - error TS2339: Property fullName does not exist
+#     at Object.<anonymous> (build.ts:5:3)
+# token=<redacted>
+# info: done
+# <|file_sep|>types.ts.diff
+# original:
+# export interface User {
+#     id: string;
+#     fullName: string;
+#     email: string;
+# }
+# updated:
+# export interface User {
+#     id: string;
+#     displayName: string;
+#     email: string;
+# }
+# <|file_sep|>original/user-service.ts:1:20
+# import { User } from './types';
+# import { UserRepository } from './user-repository';
+# export class UserService {
+#     constructor(private readonly repository: UserRepository) {}
+#     getUserById(id: string): User | undefined {
+#         return this.repository.findById(id);
+#     }
+#     getDisplayName(id: string): string {
+#         const user = this.repository.findById(id);
+#         return user ? user.fullName : 'unknown';
+#     }
+#     listEmails(): string[] {
+#         return this.repository.all().map(user => user.email);
+#     }
+# }
+# <|file_sep|>current/user-service.ts:1:20
+# import { User } from './types';
+# import { UserRepository } from './user-repository';
+# export class UserService {
+#     constructor(private readonly repository: UserRepository) {}
+#     getUserById(id: string): User | undefined {
+#         return this.repository.findById(id);
+#     }
+#     getDisplayName(id: string): string {
+#         const user = this.repository.findById(id);
+#         return user ? user.fullName<|cursor|> : 'unknown';
+#     }
+#     listEmails(): string[] {
+#         return this.repository.all().map(user => user.email);
+#     }
+# }
+# <|file_sep|>updated/user-service.ts:1:20
+# [Sweep:node:model-call:llama-sweep-client] model-call prompt {
+#   baseUrl: 'http://127.0.0.1:8000/v1',
+#   model: 'sweep-next-edit-small',
+#   maxTokens: 256,
+#   temperature: 0.05,
+#   stop: [ '<|file_sep|>', '<|endoftext|>' ],
+#   promptChars: 1873
+# }
+# [Sweep:node:model-call:llama-sweep-client] model-call prompt text:
+# <|file_sep|>types.ts
+# export interface User {
+#     id: string;
+#     displayName: string;
+#     email: string;
+# }
+# <|file_sep|>outline/user-service.ts
+# UserService [4-19] <-- cursor
+#   constructor [5-5]
+# <|file_sep|>diagnostics/user-service.ts
+# Line 12: Property 'fullName' does not exist on type 'User'.
+# <|file_sep|>output/build
+# starting tsc
+# src/user-service.ts:13:21 - error TS2339: Property fullName does not exist
+#     at Object.<anonymous> (build.ts:5:3)
+# token=<redacted>
+# info: done
+# <|file_sep|>types.ts.diff
+# original:
+# export interface User {
+#     id: string;
+#     fullName: string;
+#     email: string;
+# }
+# updated:
+# export interface User {
+#     id: string;
+#     displayName: string;
+#     email: string;
+# }
+# <|file_sep|>original/user-service.ts:1:20
+# import { User } from './types';
+# import { UserRepository } from './user-repository';
+# export class UserService {
+#     constructor(private readonly repository: UserRepository) {}
+#     getUserById(id: string): User | undefined {
+#         return this.repository.findById(id);
+#     }
+#     getDisplayName(id: string): string {
+#         const user = this.repository.findById(id);
+#         return user ? user.fullName : 'unknown';
+#     }
+#     listEmails(): string[] {
+#         return this.repository.all().map(user => user.email);
+#     }
+# }
+# <|file_sep|>current/user-service.ts:1:20
+# import { User } from './types';
+# import { UserRepository } from './user-repository';
+# export class UserService {
+#     constructor(private readonly repository: UserRepository) {}
+#     getUserById(id: string): User | undefined {
+#         return this.repository.findById(id);
+#     }
+#     getDisplayName(id: string): string {
+#         const user = this.repository.findById(id);
+#         return user ? user.fullName<|cursor|> : 'unknown';
+#     }
+#     listEmails(): string[] {
+#         return this.repository.all().map(user => user.email);
+#     }
+# }
+# <|file_sep|>updated/user-service.ts:1:20
+# [Sweep:node:model-call:llama-sweep-client] Sweep llama.cpp completion returned { durationMs: 343, rawChars: 528 }
+# [Sweep:node:model-call:sweep-response-parser] Sweep response cleaned {
+#   rawChars: 528,
+#   cleanedChars: 526,
+#   prefillChars: 0,
+#   updatedWindowChars: 526
+# }
+# [Sweep:node:model-call:sweep-response-parser] Sweep response parsed into edit {
+#   range: {
+#     start: { line: 12, character: 0 },
+#     end: { line: 19, character: 0 }
+#   },
+#   newTextChars: 157
+# }
+# [Sweep:common:retrieval-queries] Sweep retrieval query built { signalCount: 5, diffChars: 159, queryChars: 212, maxChars: 400 }
+# [Sweep:node:data-formatting:context-trimmer] Sweep context trimmed {
+#   modelId: 'sweep-small',
+#   contextSize: 8000,
+#   maxTokens: 256,
+#   budget: 30464,
+#   remaining: 27623,
+#   overflow: false,
+#   windowChars: 524,
+#   originalChars: 524,
+#   recentEditsIn: 1,
+#   recentEditsOut: 1,
+#   diagnosticsIn: 1,
+#   diagnosticsOut: 1,
+#   neighborsIn: 5,
+#   neighborsOut: 5,
+#   relatedIn: 1,
+#   relatedOut: 1,
+#   outlineChars: 49,
+#   outputOut: 1
+# }
+# [Sweep:node:data-formatting:file-blocks] Sweep RAG file blocks formatted { neighbors: 5, blocks: 5 }
+# [Sweep:node:data-formatting:file-blocks] Sweep related file blocks formatted { relatedFiles: 1, blocks: 1 }
+# [Sweep:node:data-formatting:diagnostics-format] Sweep diagnostics pseudo-file formatted { diagnostics: 1, chars: 59 }
+# [Sweep:node:data-formatting:diff-blocks] Sweep diff blocks formatted { edits: 1, blocks: 1 }
+# [Sweep:node:prompt-creating] Sweep prompt built {
+#   modelId: 'sweep-small',
+#   llamaModel: 'sweep-next-edit-small',
+#   maxTokens: 256,
+#   overflow: false,
+#   blocks: 13,
+#   range: '1:20',
+#   promptChars: 2976,
+#   neighbors: 5,
+#   relatedFiles: 1,
+#   recentEdits: 1,
+#   diagnostics: 1,
+#   hasOutline: true,
+#   outputSnippets: 1
+# }
+# [Sweep:node:prompt-creating] training-format prompt { modelId: 'sweep-small', range: '1:20', promptChars: 2976 }
+# [Sweep:node:prompt-creating] training-format prompt text:
+# <|file_sep|>types.ts
+# export interface User {
+#     id: string;
+#     fullName: string;
+#     email: string;
+# }
+# <|file_sep|>types.ts
+# export interface Order {
+#     id: string;
+#     userId: string;
+#     total: number;
+# }
+# <|file_sep|>user-service.ts
+# export class UserService {
+#     constructor(private readonly repository: UserRepository) {}
+#     getUserById(id: string): User | undefined {
+#         return this.repository.findById(id);
+#     }
+#     getDisplayName(id: string): string {
+#         const user = this.repository.findById(id);
+#         return user ? user.fullName : 'unknown';
+#     }
+#     listEmails(): string[] {
+#         return this.repository.all().map(user => user.email);
+#     }
+# }
+# <|file_sep|>order-service.ts
+# import { UserService } from './user-service';
+# <|file_sep|>user-repository.ts
+# export class UserRepository {
+#     private readonly users = new Map<string, User>();
+#     save(user: User): void {
+#         this.users.set(user.id, user);
+#     }
+#     findById(id: string): User | undefined {
+#         return this.users.get(id);
+#     }
+#     all(): User[] {
+#         return Array.from(this.users.values());
+#     }
+# }
+# <|file_sep|>types.ts
+# export interface User {
+#     id: string;
+#     displayName: string;
+#     email: string;
+# }
+# <|file_sep|>outline/user-service.ts
+# UserService [4-19] <-- cursor
+#   constructor [5-5]
+# <|file_sep|>diagnostics/user-service.ts
+# Line 12: Property 'fullName' does not exist on type 'User'.
+# <|file_sep|>output/build
+# starting tsc
+# src/user-service.ts:13:21 - error TS2339: Property fullName does not exist
+#     at Object.<anonymous> (build.ts:5:3)
+# token=<redacted>
+# info: done
+# <|file_sep|>types.ts.diff
+# original:
+# export interface User {
+#     id: string;
+#     fullName: string;
+#     email: string;
+# }
+# updated:
+# export interface User {
+#     id: string;
+#     displayName: string;
+#     email: string;
+# }
+# <|file_sep|>original/user-service.ts:1:20
+# import { User } from './types';
+# import { UserRepository } from './user-repository';
+# export class UserService {
+#     constructor(private readonly repository: UserRepository) {}
+#     getUserById(id: string): User | undefined {
+#         return this.repository.findById(id);
+#     }
+#     getDisplayName(id: string): string {
+#         const user = this.repository.findById(id);
+#         return user ? user.fullName : 'unknown';
+#     }
+#     listEmails(): string[] {
+#         return this.repository.all().map(user => user.email);
+#     }
+# }
+# <|file_sep|>current/user-service.ts:1:20
+# import { User } from './types';
+# import { UserRepository } from './user-repository';
+# export class UserService {
+#     constructor(private readonly repository: UserRepository) {}
+#     getUserById(id: string): User | undefined {
+#         return this.repository.findById(id);
+#     }
+#     getDisplayName(id: string): string {
+#         const user = this.repository.findById(id);
+#         return user ? user.fullName<|cursor|> : 'unknown';
+#     }
+#     listEmails(): string[] {
+#         return this.repository.all().map(user => user.email);
+#     }
+# }
+# <|file_sep|>updated/user-service.ts:1:20
+# [Sweep:node:model-call:llama-sweep-client] model-call prompt {
+#   baseUrl: 'http://127.0.0.1:8000/v1',
+#   model: 'sweep-next-edit-small',
+#   maxTokens: 256,
+#   temperature: 0.05,
+#   stop: [ '<|file_sep|>', '<|endoftext|>' ],
+#   promptChars: 2976
+# }
+# [Sweep:node:model-call:llama-sweep-client] model-call prompt text:
+# <|file_sep|>types.ts
+# export interface User {
+#     id: string;
+#     fullName: string;
+#     email: string;
+# }
+# <|file_sep|>types.ts
+# export interface Order {
+#     id: string;
+#     userId: string;
+#     total: number;
+# }
+# <|file_sep|>user-service.ts
+# export class UserService {
+#     constructor(private readonly repository: UserRepository) {}
+#     getUserById(id: string): User | undefined {
+#         return this.repository.findById(id);
+#     }
+#     getDisplayName(id: string): string {
+#         const user = this.repository.findById(id);
+#         return user ? user.fullName : 'unknown';
+#     }
+#     listEmails(): string[] {
+#         return this.repository.all().map(user => user.email);
+#     }
+# }
+# <|file_sep|>order-service.ts
+# import { UserService } from './user-service';
+# <|file_sep|>user-repository.ts
+# export class UserRepository {
+#     private readonly users = new Map<string, User>();
+#     save(user: User): void {
+#         this.users.set(user.id, user);
+#     }
+#     findById(id: string): User | undefined {
+#         return this.users.get(id);
+#     }
+#     all(): User[] {
+#         return Array.from(this.users.values());
+#     }
+# }
+# <|file_sep|>types.ts
+# export interface User {
+#     id: string;
+#     displayName: string;
+#     email: string;
+# }
+# <|file_sep|>outline/user-service.ts
+# UserService [4-19] <-- cursor
+#   constructor [5-5]
+# <|file_sep|>diagnostics/user-service.ts
+# Line 12: Property 'fullName' does not exist on type 'User'.
+# <|file_sep|>output/build
+# starting tsc
+# src/user-service.ts:13:21 - error TS2339: Property fullName does not exist
+#     at Object.<anonymous> (build.ts:5:3)
+# token=<redacted>
+# info: done
+# <|file_sep|>types.ts.diff
+# original:
+# export interface User {
+#     id: string;
+#     fullName: string;
+#     email: string;
+# }
+# updated:
+# export interface User {
+#     id: string;
+#     displayName: string;
+#     email: string;
+# }
+# <|file_sep|>original/user-service.ts:1:20
+# import { User } from './types';
+# import { UserRepository } from './user-repository';
+# export class UserService {
+#     constructor(private readonly repository: UserRepository) {}
+#     getUserById(id: string): User | undefined {
+#         return this.repository.findById(id);
+#     }
+#     getDisplayName(id: string): string {
+#         const user = this.repository.findById(id);
+#         return user ? user.fullName : 'unknown';
+#     }
+#     listEmails(): string[] {
+#         return this.repository.all().map(user => user.email);
+#     }
+# }
+# <|file_sep|>current/user-service.ts:1:20
+# import { User } from './types';
+# import { UserRepository } from './user-repository';
+# export class UserService {
+#     constructor(private readonly repository: UserRepository) {}
+#     getUserById(id: string): User | undefined {
+#         return this.repository.findById(id);
+#     }
+#     getDisplayName(id: string): string {
+#         const user = this.repository.findById(id);
+#         return user ? user.fullName<|cursor|> : 'unknown';
+#     }
+#     listEmails(): string[] {
+#         return this.repository.all().map(user => user.email);
+#     }
+# }
+# <|file_sep|>updated/user-service.ts:1:20
+# [Sweep:node:model-call:llama-sweep-client] Sweep llama.cpp completion returned { durationMs: 351, rawChars: 528 }
+# [Sweep:node:model-call:sweep-response-parser] Sweep response cleaned {
+#   rawChars: 528,
+#   cleanedChars: 526,
+#   prefillChars: 0,
+#   updatedWindowChars: 526
+# }
+# [Sweep:node:model-call:sweep-response-parser] Sweep response parsed into edit {
+#   range: {
+#     start: { line: 12, character: 0 },
+#     end: { line: 19, character: 0 }
+#   },
+#   newTextChars: 157
+# }
+# [battlefield] report written to /home/ramwsh/my-nix-cfg/generic-home-files/packages/pkgs-theia-ide/smart-completions/test_results/battlefield-matrix-20260626-003146/2026-06-25T17-33-47-472Z__embed-granite__db-lancedb__fim-none__nes-sweep-small
+# Subtest: battlefield: embedding index + retrieval + FIM/NES (no-RAG and with-RAG) bundle run
+ok 1 - battlefield: embedding index + retrieval + FIM/NES (no-RAG and with-RAG) bundle run
+  ---
+  duration_ms: 1375.085381
+  type: 'test'
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 1
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1453.8092

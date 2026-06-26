@@ -1,0 +1,9 @@
+{
+  "EMBED_URL": "http://127.0.0.1:8090/v1",
+  "EMBED_MODEL": "granite-embedding-311M",
+  "VECTOR_DB": "lancedb",
+  "FIM_URL": "http://127.0.0.1:8070/v1",
+  "FIM_MODEL": "granite-4.1-8b",
+  "NES_URL": "http://127.0.0.1:8000/v1",
+  "NES_MODEL": "sweep-default"
+}

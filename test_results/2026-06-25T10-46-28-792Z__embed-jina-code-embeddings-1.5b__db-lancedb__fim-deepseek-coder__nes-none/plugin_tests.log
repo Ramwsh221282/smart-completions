@@ -1,0 +1,49 @@
+{
+  "runId": "2026-06-25T10-46-28-792Z",
+  "embedModel": "jina-code-embeddings-1.5b",
+  "embedDim": 1536,
+  "vectorDb": "lancedb",
+  "filesIndexed": 6,
+  "indexMs": 140,
+  "invariants": [
+    {
+      "name": "index ready",
+      "ok": true
+    },
+    {
+      "name": "files indexed > 0",
+      "ok": true,
+      "detail": "filesIndexed=6"
+    },
+    {
+      "name": "retrieval returns neighbors",
+      "ok": true
+    },
+    {
+      "name": "FIM no_rag: no token leak",
+      "ok": true,
+      "detail": "\"Math.round(total  * factor);\\n}\\n\\nexport function convertCurrencyToUSD(price: number, currency: Currency): number  {\\n    switch (currency) {\\n        case 'EUR':\\n            return Math.round(price  * 0.85);\\n        case 'GBP':\\n            return Math.round(price  * 0.76);\\n        case 'JPY':\\n            return Math.round(price  * 110.87);\\n        case 'KRW':\\n            return Math.round(price  * 1214.0);\\n        case 'VND':\\n            return Math.round(price  * 2332\""
+    },
+    {
+      "name": "FIM no_rag: no code fence",
+      "ok": true
+    },
+    {
+      "name": "FIM with_rag: no token leak",
+      "ok": true,
+      "detail": "\"Math.round(total  * factor);\\n}\\n\\nexport function convertCurrencyToUSD(price: number, currency: Currency): number  {\\n    switch (currency) {\\n        case 'EUR':\\n            return Math.round(price  * 0.85);\\n        case 'GBP':\\n            return Math.round(price  * 0.76);\\n        case 'JPY':\\n            return Math.round(price  * 110.87);\\n        case 'KRW':\\n            return Math.round(price  * 1214.0);\\n        case 'VND':\\n            return Math.round(price  * 2332\""
+    },
+    {
+      "name": "FIM with_rag: no code fence",
+      "ok": true
+    },
+    {
+      "name": "FIM with_rag: neighbors fed",
+      "ok": true
+    }
+  ],
+  "quality": {
+    "fim_no_rag_completion": "Math.round(total  * factor);\n}\n\nexport function convertCurrencyToUSD(price: number, currency: Currency): number  {\n    switch (currency) {\n        case 'EUR':\n            return Math.round(price  * 0.85);\n        case 'GBP':\n            return Math.round(price  * 0.76);\n        case 'JPY':\n            return Math.round(price  * 110.87);\n        case 'KRW':\n            return Math.round(price  * 1214.0);\n        case 'VND':\n            return Math.round(price  * 2332",
+    "fim_with_rag_completion": "Math.round(total  * factor);\n}\n\nexport function convertCurrencyToUSD(price: number, currency: Currency): number  {\n    switch (currency) {\n        case 'EUR':\n            return Math.round(price  * 0.85);\n        case 'GBP':\n            return Math.round(price  * 0.76);\n        case 'JPY':\n            return Math.round(price  * 110.87);\n        case 'KRW':\n            return Math.round(price  * 1214.0);\n        case 'VND':\n            return Math.round(price  * 2332"
+  }
+}

@@ -1,0 +1,82 @@
+{
+  "runId": "2026-06-25T10-44-12-318Z",
+  "embedModel": "jina-code-embeddings-1.5b",
+  "embedDim": 1536,
+  "vectorDb": "lancedb",
+  "filesIndexed": 6,
+  "indexMs": 190,
+  "invariants": [
+    {
+      "name": "index ready",
+      "ok": true
+    },
+    {
+      "name": "files indexed > 0",
+      "ok": true,
+      "detail": "filesIndexed=6"
+    },
+    {
+      "name": "retrieval returns neighbors",
+      "ok": true
+    },
+    {
+      "name": "FIM no_rag: no token leak",
+      "ok": true,
+      "detail": "\"\\n        total * factor;\\n}\\n\\nexport function formatCurrency(amount: number, currency: Currency): string {\\n    switch (currency) {\\n        case Currency.EUR:\\n            return `€ ${amount.toFixed(2)}`;\\n        case Currency.USD:\\n            return `$ ${amount.toFixed(2)}`;\\n        case Currency.GBP:\\n            return `£ ${amount.toFixed(2)}`;\\n        default:\\n            return `? ${amount.toFixed(2)}`;\\n    }\""
+    },
+    {
+      "name": "FIM no_rag: no code fence",
+      "ok": true
+    },
+    {
+      "name": "FIM with_rag: no token leak",
+      "ok": true,
+      "detail": "\"\\n\\ntotal * factor;\\n}\\n\\nexport function formatPrice(amount: number, currency: Currency): string {\\n    return `${currency} ${amount.toFixed(2)}`;\""
+    },
+    {
+      "name": "FIM with_rag: no code fence",
+      "ok": true
+    },
+    {
+      "name": "FIM with_rag: neighbors fed",
+      "ok": true
+    },
+    {
+      "name": "NES no_rag: prompt not overflow",
+      "ok": true
+    },
+    {
+      "name": "NES no_rag: edit ranges inside window",
+      "ok": true
+    },
+    {
+      "name": "NES no_rag: no marker leak",
+      "ok": true
+    },
+    {
+      "name": "NES with_rag: diff-query found cross-file dependency",
+      "ok": true,
+      "detail": "types.ts,user-service.ts,user-repository.ts,user-service.ts,user-repository.ts"
+    },
+    {
+      "name": "NES with_rag: prompt not overflow",
+      "ok": true
+    },
+    {
+      "name": "NES with_rag: edit ranges inside window",
+      "ok": true
+    },
+    {
+      "name": "NES with_rag: no marker leak",
+      "ok": true
+    }
+  ],
+  "quality": {
+    "fim_no_rag_completion": "\n        total * factor;\n}\n\nexport function formatCurrency(amount: number, currency: Currency): string {\n    switch (currency) {\n        case Currency.EUR:\n            return `€ ${amount.toFixed(2)}`;\n        case Currency.USD:\n            return `$ ${amount.toFixed(2)}`;\n        case Currency.GBP:\n            return `£ ${amount.toFixed(2)}`;\n        default:\n            return `? ${amount.toFixed(2)}`;\n    }",
+    "fim_with_rag_completion": "\n\ntotal * factor;\n}\n\nexport function formatPrice(amount: number, currency: Currency): string {\n    return `${currency} ${amount.toFixed(2)}`;",
+    "nes_no_rag_edit": "        return user ? user.displayName : 'unknown';\n    }\n\n    listEmails(): string[] {\n        return this.repository.all().map(user => user.email);\n    }\n}",
+    "nes_no_rag_edits_count": 1,
+    "nes_with_rag_edit": "        return user ? user.displayName : 'unknown';\n    }\n\n    listEmails(): string[] {\n        return this.repository.all().map(user => user.email);\n    }\n}",
+    "nes_with_rag_edits_count": 1
+  }
+}

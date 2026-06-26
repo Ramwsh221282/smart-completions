@@ -1,0 +1,118 @@
+<|file_sep|>types.ts
+export interface User {
+    id: string;
+    fullName: string;
+    email: string;
+}
+<|file_sep|>user-service.ts
+export class UserService {
+    constructor(private readonly repository: UserRepository) {}
+
+    getUserById(id: string): User | undefined {
+        return this.repository.findById(id);
+    }
+
+    getDisplayName(id: string): string {
+        const user = this.repository.findById(id);
+        return user ? user.fullName : 'unknown';
+    }
+
+    listEmails(): string[] {
+        return this.repository.all().map(user => user.email);
+    }
+}
+<|file_sep|>user-repository.ts
+export class UserRepository {
+    private readonly users = new Map<string, User>();
+
+    save(user: User): void {
+        this.users.set(user.id, user);
+    }
+
+    findById(id: string): User | undefined {
+        return this.users.get(id);
+    }
+
+    all(): User[] {
+        return Array.from(this.users.values());
+    }
+}
+<|file_sep|>types.ts
+export interface Order {
+    id: string;
+    userId: string;
+    total: number;
+}
+<|file_sep|>order-service.ts
+import { UserService } from './user-service';
+<|file_sep|>types.ts
+export interface User {
+    id: string;
+    displayName: string;
+    email: string;
+}
+<|file_sep|>outline/user-service.ts
+UserService [4-19] <-- cursor
+  constructor [5-5]
+<|file_sep|>output/build
+starting tsc
+src/user-service.ts:13:21 - error TS2339: Property fullName does not exist
+    at Object.<anonymous> (build.ts:5:3)
+token=<redacted>
+info: done
+<|file_sep|>types.ts.diff
+original:
+export interface User {
+    id: string;
+    fullName: string;
+    email: string;
+}
+updated:
+export interface User {
+    id: string;
+    displayName: string;
+    email: string;
+}
+<|file_sep|>original/user-service.ts:1:20
+import { User } from './types';
+import { UserRepository } from './user-repository';
+
+export class UserService {
+    constructor(private readonly repository: UserRepository) {}
+
+    getUserById(id: string): User | undefined {
+        return this.repository.findById(id);
+    }
+
+    getDisplayName(id: string): string {
+        const user = this.repository.findById(id);
+        return user ? user.fullName : 'unknown';
+    }
+
+    listEmails(): string[] {
+        return this.repository.all().map(user => user.email);
+    }
+}
+
+<|file_sep|>current/user-service.ts:1:20
+import { User } from './types';
+import { UserRepository } from './user-repository';
+
+export class UserService {
+    constructor(private readonly repository: UserRepository) {}
+
+    getUserById(id: string): User | undefined {
+        return this.repository.findById(id);
+    }
+
+    getDisplayName(id: string): string {
+        const user = this.repository.findById(id);
+        return user ? user.fullName<|cursor|> : 'unknown';
+    }
+
+    listEmails(): string[] {
+        return this.repository.all().map(user => user.email);
+    }
+}
+
+<|file_sep|>updated/user-service.ts:1:20

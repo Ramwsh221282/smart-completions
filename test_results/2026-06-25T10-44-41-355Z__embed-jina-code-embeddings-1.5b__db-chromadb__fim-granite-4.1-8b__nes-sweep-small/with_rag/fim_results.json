@@ -1,0 +1,9 @@
+{
+  "modelId": "granite-4.1-8b",
+  "neighbors": [
+    "pricing.ts",
+    "pricing.ts",
+    "pricing.ts"
+  ],
+  "completion": "\n\ntotal * factor;\n}\n\nexport function formatPrice(amount: number, currency: Currency): string {\n    return `${currency} ${amount.toFixed(2)}`;"
+}

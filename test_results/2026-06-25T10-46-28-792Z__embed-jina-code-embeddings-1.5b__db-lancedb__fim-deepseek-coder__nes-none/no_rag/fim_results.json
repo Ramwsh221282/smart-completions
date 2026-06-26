@@ -1,0 +1,5 @@
+{
+  "modelId": "deepseek-coder",
+  "neighbors": [],
+  "completion": "Math.round(total  * factor);\n}\n\nexport function convertCurrencyToUSD(price: number, currency: Currency): number  {\n    switch (currency) {\n        case 'EUR':\n            return Math.round(price  * 0.85);\n        case 'GBP':\n            return Math.round(price  * 0.76);\n        case 'JPY':\n            return Math.round(price  * 110.87);\n        case 'KRW':\n            return Math.round(price  * 1214.0);\n        case 'VND':\n            return Math.round(price  * 2332"
+}

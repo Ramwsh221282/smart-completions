@@ -1,0 +1,8 @@
+
+
+total * factor;
+}
+
+export function formatPrice(amount: number, currency: Currency): string {
+    return `${currency} ${amount.toFixed(2)}`;
+}

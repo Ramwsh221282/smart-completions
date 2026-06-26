@@ -1,0 +1,57 @@
+{
+  "name": "smart-completions",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Native Theia extension: FIM ghost-text autocomplete + Next Edit Suggestions (local llama.cpp)",
+  "license": "EPL-2.0 OR GPL-2.0-only WITH Classpath-exception-2.0",
+  "keywords": [
+    "theia-extension"
+  ],
+  "files": [
+    "lib",
+    "src"
+  ],
+  "dependencies": {
+    "@lancedb/lancedb": "0.30.0",
+    "@theia/bulk-edit": "1.72.3",
+    "@theia/callhierarchy": "1.72.3",
+    "@theia/core": "1.72.3",
+    "@theia/editor": "1.72.3",
+    "@theia/file-search": "1.72.3",
+    "@theia/filesystem": "1.72.3",
+    "@theia/markers": "1.72.3",
+    "@theia/monaco": "1.72.3",
+    "@theia/monaco-editor-core": "1.108.201",
+    "@theia/navigator": "1.72.3",
+    "@theia/outline-view": "1.72.3",
+    "@theia/output": "1.72.3",
+    "@theia/preferences": "1.72.3",
+    "@theia/scm": "1.72.3",
+    "@theia/scm-extra": "1.72.3",
+    "@theia/search-in-workspace": "1.72.3",
+    "@theia/typehierarchy": "1.72.3",
+    "@theia/workspace": "1.72.3",
+    "@xenova/transformers": "2.17.2",
+    "apache-arrow": "18.1.0",
+    "chromadb": "3.4.3",
+    "ignore": "7.0.5",
+    "tree-sitter-wasms": "0.1.13",
+    "web-tree-sitter": "0.20.8"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.0"
+  },
+  "theiaExtensions": [
+    {
+      "frontend": "lib/browser/smart-completions-frontend-module",
+      "backend": "lib/node/smart-completions-backend-module"
+    }
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "watch": "tsc -b -w",
+    "clean": "tsc -b --clean",
+    "lint": "npx --yes @biomejs/biome@2.3.13 check src/common/sweep src/node/sweep src/browser/sweep src/browser/nes-render test/nes-context-sources.test.ts test/nes-prompt.test.ts test/nes-response-parser.test.ts test/llama-nes-client.test.ts test/nes-live.integration.test.ts test/battlefield.integration.test.ts",
+    "test": "tsc -p test/tsconfig.json && node --test lib-test/test/*.test.js"
+  }
+}

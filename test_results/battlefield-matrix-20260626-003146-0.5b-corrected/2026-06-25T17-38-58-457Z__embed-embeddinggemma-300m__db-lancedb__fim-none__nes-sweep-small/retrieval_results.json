@@ -1,0 +1,37 @@
+[
+  {
+    "filePath": "docs/guide.md",
+    "startLine": 3,
+    "endLine": 4,
+    "text": "The user service resolves a user by id and returns a display name. The display\nname comes from the user record stored in the user repository.",
+    "score": 0.03278688524590164
+  },
+  {
+    "filePath": "user-service.ts",
+    "startLine": 2,
+    "endLine": 2,
+    "text": "import { UserRepository } from './user-repository';",
+    "score": 0.03225806451612903
+  },
+  {
+    "filePath": "user-service.ts",
+    "startLine": 4,
+    "endLine": 19,
+    "text": "export class UserService {\n    constructor(private readonly repository: UserRepository) {}\n\n    getUserById(id: string): User | undefined {\n        return this.repository.findById(id);\n    }\n\n    getDisplayName(id: string): string {\n        const user = this.repository.findById(id);\n        return user ? user.fullName : 'unknown';\n    }\n\n    listEmails(): string[] {\n        return this.repository.all().map(user => user.email);\n    }\n}",
+    "score": 0.031746031746031744
+  },
+  {
+    "filePath": "docs/guide.md",
+    "startLine": 8,
+    "endLine": 10,
+    "text": "An order references a user by id. The order service formats a human readable\nsummary for an order by combining the order id, the resolved user display name,\nand the order total.",
+    "score": 0.031009615384615385
+  },
+  {
+    "filePath": "order-service.ts",
+    "startLine": 2,
+    "endLine": 2,
+    "text": "import { UserService } from './user-service';",
+    "score": 0.03055037313432836
+  }
+]

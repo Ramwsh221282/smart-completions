@@ -1,0 +1,15 @@
+
+        total * factor;
+}
+
+export function formatCurrency(amount: number, currency: Currency): string {
+    switch (currency) {
+        case Currency.EUR:
+            return `€ ${amount.toFixed(2)}`;
+        case Currency.USD:
+            return `$ ${amount.toFixed(2)}`;
+        case Currency.GBP:
+            return `£ ${amount.toFixed(2)}`;
+        default:
+            return `? ${amount.toFixed(2)}`;
+    }

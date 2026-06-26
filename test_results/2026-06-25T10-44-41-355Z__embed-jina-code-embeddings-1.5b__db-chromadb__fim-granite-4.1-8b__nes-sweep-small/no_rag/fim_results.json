@@ -1,0 +1,5 @@
+{
+  "modelId": "granite-4.1-8b",
+  "neighbors": [],
+  "completion": "\n        total * factor;\n}\n\nexport function formatCurrency(amount: number, currency: Currency): string {\n    switch (currency) {\n        case Currency.EUR:\n            return `€ ${amount.toFixed(2)}`;\n        case Currency.USD:\n            return `$ ${amount.toFixed(2)}`;\n        case Currency.GBP:\n            return `£ ${amount.toFixed(2)}`;\n        default:\n            return `? ${amount.toFixed(2)}`;\n    }"
+}

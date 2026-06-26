@@ -1,0 +1,15 @@
+Math.round(total  * factor);
+}
+
+export function convertCurrencyToUSD(price: number, currency: Currency): number  {
+    switch (currency) {
+        case 'EUR':
+            return Math.round(price  * 0.85);
+        case 'GBP':
+            return Math.round(price  * 0.76);
+        case 'JPY':
+            return Math.round(price  * 110.87);
+        case 'KRW':
+            return Math.round(price  * 1214.0);
+        case 'VND':
+            return Math.round(price  * 2332

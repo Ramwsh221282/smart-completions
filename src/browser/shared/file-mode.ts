@@ -1,0 +1,48 @@
+import { FileMode } from '../../common/mode-types';
+
+const CODE_LANGUAGES = new Set([
+    'typescript',
+    'typescriptreact',
+    'tsx',
+    'javascript',
+    'javascriptreact',
+    'jsx',
+    'python',
+    'go',
+    'rust',
+    'c',
+    'cpp',
+    'c++',
+    'csharp',
+    'c#',
+    'java',
+    'ruby',
+    'php',
+    'bash',
+    'shellscript',
+    'sh',
+    'zsh',
+    'html',
+    'css',
+    'json',
+    'jsonc',
+    'yaml',
+    'toml',
+    'lua',
+    'scala',
+    'swift',
+    'kotlin',
+    'vue',
+    'zig',
+    'dart',
+    'elixir',
+    'elm',
+    'ocaml',
+    'solidity',
+    'objc',
+    'objective-c',
+]);
+
+export function fileModeForLanguage(languageId: string): FileMode {
+    return CODE_LANGUAGES.has(languageId.toLowerCase()) ? 'code' : 'prose';
+}

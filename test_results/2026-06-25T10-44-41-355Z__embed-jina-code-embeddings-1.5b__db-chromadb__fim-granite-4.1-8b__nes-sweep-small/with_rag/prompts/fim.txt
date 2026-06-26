@@ -1,0 +1,26 @@
+<|reponame|>battlefield
+<|filename|>pricing.ts
+export function computeTotalPrice(items: number[]): number {
+    return items.reduce((sum, value) => sum + value, 0);
+}
+<|filename|>pricing.ts
+export function applyDiscount(total: number, percent: number): number {
+    const factor = 1 - percent / 100;
+    return total * factor;
+}
+<|filename|>pricing.ts
+export function formatPrice(amount: number, currency: Currency): string {
+    return `${currency} ${amount.toFixed(2)}`;
+}
+<|filename|>pricing.ts
+<|fim_prefix|>import { Currency } from './types';
+
+export function computeTotalPrice(items: number[]): number {
+    return items.reduce((sum, value) => sum + value, 0);
+}
+
+export function applyDiscount(total: number, percent: number): number {
+    const factor = 1 - percent / 100;
+    return <|fim_suffix|>
+}
+<|fim_middle|>

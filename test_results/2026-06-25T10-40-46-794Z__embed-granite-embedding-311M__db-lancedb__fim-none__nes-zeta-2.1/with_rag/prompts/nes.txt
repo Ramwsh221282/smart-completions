@@ -1,0 +1,74 @@
+<[fim-suffix]>
+<[fim-prefix]><filename>types.ts
+export interface User {
+    id: string;
+    fullName: string;
+    email: string;
+}
+
+<filename>types.ts
+export interface Order {
+    id: string;
+    userId: string;
+    total: number;
+}
+
+<filename>user-service.ts
+export class UserService {
+    constructor(private readonly repository: UserRepository) {}
+
+    getUserById(id: string): User | undefined {
+        return this.repository.findById(id);
+    }
+
+    getDisplayName(id: string): string {
+        const user = this.repository.findById(id);
+        return user ? user.fullName : 'unknown';
+    }
+
+    listEmails(): string[] {
+        return this.repository.all().map(user => user.email);
+    }
+}
+
+<filename>user-repository.ts
+import { User } from './types';
+
+<filename>user-service.ts
+import { User } from './types';
+
+<filename>edit_history
+--- a/types.ts
++++ b/types.ts
+@@ -1,5 +1,5 @@
+ export interface User {
+     id: string;
+-    fullName: string;
++    displayName: string;
+     email: string;
+ }
+
+<filename>user-service.ts
+<|marker_1|>
+import { User } from './types';
+import { UserRepository } from './user-repository';
+
+export class UserService {
+    constructor(private readonly repository: UserRepository) {}
+
+    getUserById(id: string): User | undefined {
+        return this.repository.findById(id);
+    }
+
+    getDisplayName(id: string): string {
+        const user = this.repository.findById(id);
+        return user ? user.fullName<|user_cursor|> : 'unknown';
+    }
+
+    listEmails(): string[] {
+        return this.repository.all().map(user => user.email);
+    }
+}
+
+<|marker_2|>
+<[fim-middle]>

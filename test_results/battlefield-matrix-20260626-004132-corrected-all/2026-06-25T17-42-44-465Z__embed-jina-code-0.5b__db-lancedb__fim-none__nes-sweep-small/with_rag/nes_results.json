@@ -1,0 +1,25 @@
+{
+  "modelId": "sweep-small",
+  "neighbors": [
+    "types.ts",
+    "user-service.ts",
+    "docs/guide.md",
+    "user-repository.ts",
+    "order-service.ts"
+  ],
+  "edits": [
+    {
+      "range": {
+        "start": {
+          "line": 12,
+          "character": 0
+        },
+        "end": {
+          "line": 19,
+          "character": 0
+        }
+      },
+      "newText": "        return user ? user.displayName : 'unknown';\n    }\n\n    listEmails(): string[] {\n        return this.repository.all().map(user => user.email);\n    }\n}"
+    }
+  ]
+}

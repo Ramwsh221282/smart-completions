@@ -1,0 +1,49 @@
+{
+  "runId": "2026-06-25T10-45-58-321Z",
+  "embedModel": "jina-code-embeddings-1.5b",
+  "embedDim": 1536,
+  "vectorDb": "lancedb",
+  "filesIndexed": 6,
+  "indexMs": 139,
+  "invariants": [
+    {
+      "name": "index ready",
+      "ok": true
+    },
+    {
+      "name": "files indexed > 0",
+      "ok": true,
+      "detail": "filesIndexed=6"
+    },
+    {
+      "name": "retrieval returns neighbors",
+      "ok": true
+    },
+    {
+      "name": "FIM no_rag: no token leak",
+      "ok": true,
+      "detail": "\"total * factor;\""
+    },
+    {
+      "name": "FIM no_rag: no code fence",
+      "ok": true
+    },
+    {
+      "name": "FIM with_rag: no token leak",
+      "ok": true,
+      "detail": "\"total * factor;\\n}\\n\\nexport function formatPrice(amount: number, currency: Currency): string {\\n    return `${currency} ${amount.toFixed(2)}`;\""
+    },
+    {
+      "name": "FIM with_rag: no code fence",
+      "ok": true
+    },
+    {
+      "name": "FIM with_rag: neighbors fed",
+      "ok": true
+    }
+  ],
+  "quality": {
+    "fim_no_rag_completion": "total * factor;",
+    "fim_with_rag_completion": "total * factor;\n}\n\nexport function formatPrice(amount: number, currency: Currency): string {\n    return `${currency} ${amount.toFixed(2)}`;"
+  }
+}
