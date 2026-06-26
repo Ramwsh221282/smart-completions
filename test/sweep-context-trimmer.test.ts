@@ -46,4 +46,6 @@ test('trimSweepContext keeps local errors and recent edits before distant errors
 
     assert.equal(trimmed.recentEdits.length, 1);
     assert.deepEqual(trimmed.diagnostics.map(diagnostic => diagnostic.message), ['near error']);
+    assert.equal(typeof trimmed.consumedTokens, 'number');
+    assert.ok(trimmed.consumedTokens >= 0);
 });

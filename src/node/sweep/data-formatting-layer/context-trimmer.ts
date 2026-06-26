@@ -14,7 +14,7 @@ import { charTokenEstimate } from '../token-budget/token-counter';
 // Логгер триммера; нужен для диагностики что было обрезано и сколько символов осталось в бюджете.
 const LOG = new SweepLogger('node:data-formatting:context-trimmer');
 // Запас под разметку промпта: file_sep токены, заголовки блоков и служебные строки.
-const SWEEP_TEMPLATE_OVERHEAD_TOKENS = 128;
+export const SWEEP_TEMPLATE_OVERHEAD_TOKENS = 128;
 // Минимальный бюджет на обязательную триаду, чтобы маленький ошибочный профиль не ломал сборку.
 const SWEEP_MIN_BUDGET_TOKENS = 256;
 // Максимум диагностик в промпте; больше не нужно, остальное шум.
@@ -62,6 +62,8 @@ export interface TrimmedSweepContext {
     outputSnippets: SweepOutputSnippet[];
     prefill: string;
     overflow: boolean;
+    /** Сумма токенов оставленных кусков; нужна для telemetry-оценки promptTokens без повторной токенизации prompt. */
+    consumedTokens: number;
 }
 
 /**
@@ -303,6 +305,7 @@ export function trimSweepContext(input: BuildSweepPromptInput, maxTokens: number
         outputSnippets: keptOutput,
         prefill,
         overflow,
+        consumedTokens: budget - remaining,
     };
 }
 

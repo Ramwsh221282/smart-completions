@@ -3,11 +3,10 @@ import { getSweepProfile, sweepRequestModelName } from '../../../common/sweep/pr
 import { SweepEditVolume } from '../../../common/sweep/types';
 import { dedupeContextFiles } from '../../../common/sweep/dedup-context';
 import { normalizeCrlf } from '../../../common/text/crlf';
-import { trimSweepContext, BuildSweepPromptInput, TrimmedSweepContext } from '../data-formatting-layer/context-trimmer';
+import { trimSweepContext, BuildSweepPromptInput, TrimmedSweepContext, SWEEP_TEMPLATE_OVERHEAD_TOKENS } from '../data-formatting-layer/context-trimmer';
 import { formatSweepDiagnosticsLines } from '../data-formatting-layer/diagnostics-format';
 import { formatSweepDiffBlocks, unifiedDiffToOriginalUpdated } from '../data-formatting-layer/diff-blocks';
 import { formatSweepCurrentFileBlock, formatSweepNeighborFileBlocks, formatSweepRelatedFileBlocks } from '../data-formatting-layer/file-blocks';
-import { charTokenEstimate } from '../token-budget/token-counter';
 
 // Логгер строителя промпта; нужен для диагностики структуры промпта и печати полного текста для инспекции.
 const LOG = new SweepLogger('node:prompt-creating');
@@ -23,6 +22,7 @@ export interface BuiltSweepPrompt {
     format: 'sweep';
     overflow: boolean;
     prefill: string;
+    /** Оценка размера промпта в токенах; точное значение используется только в development для калибровки. */
     promptTokens: number;
     tokenMode: 'tokenizer' | 'char-fallback';
     contextProfile: string;
@@ -46,7 +46,17 @@ export function buildSweepPrompt(input: BuildSweepPromptInput): BuiltSweepPrompt
     const sections = buildSweepSections(trimInput, trimmed, range);
     const prompt = sections.join('\n');
     const llamaModel = input.requestModelName ?? sweepRequestModelName(profile.id, '');
-    const promptTokens = input.tokenCounter ? input.tokenCounter.count(prompt) : charTokenEstimate(prompt);
+    const estimatedPromptTokens = trimmed.consumedTokens + SWEEP_TEMPLATE_OVERHEAD_TOKENS;
+    let promptTokens = estimatedPromptTokens;
+    if (process.env.NODE_ENV === 'development' && input.tokenCounter) {
+        const exact = input.tokenCounter.count(prompt);
+        LOG.debug('Sweep promptTokens estimate delta', {
+            estimate: estimatedPromptTokens,
+            exact,
+            markupActual: exact - trimmed.consumedTokens,
+        });
+        promptTokens = exact;
+    }
     const tokenMode = input.tokenCounter?.mode ?? 'char-fallback';
     LOG.info('Sweep prompt built', {
         modelId: input.modelId,

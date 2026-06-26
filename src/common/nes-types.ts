@@ -77,6 +77,7 @@ export interface NesResponseMeta {
     status: NesResponseStatus;
     rejectReason?: string;
     durationMs: number;
+    /** Оценка размера промпта в токенах; используется только для telemetry-инспекции. */
     promptTokens?: number;
     tokenMode: 'tokenizer' | 'char-fallback';
     contextProfile: string;

@@ -4,6 +4,7 @@ import { buildNesPrompt, formatRecentEdits } from '../src/node/nes-module/contex
 import { buildSweepPrompt, unifiedDiffToOriginalUpdated } from '../src/node/sweep/prompt-creating-layer/sweep-prompt-builder';
 import { RecentEdit } from '../src/common/edit-history-types';
 import { reconstructOriginalWindow } from '../src/common/sweep/original-window-reconstruction';
+import type { TokenCounter } from '../src/node/sweep/token-budget/token-counter';
 
 const recentEdits: RecentEdit[] = [{
     uri: 'src/a.ts',
@@ -14,6 +15,33 @@ const recentEdits: RecentEdit[] = [{
 /** Достаёт хвост из трёх последних <|file_sep|> блоков. */
 function lastThreeBlocks(prompt: string): string[] {
     return prompt.split('<|file_sep|>').filter(Boolean).slice(-3);
+}
+
+/** Выполняет тест с временным NODE_ENV и восстанавливает исходное значение без утечки между тестами. */
+function withNodeEnv<T>(value: string, fn: () => T): T {
+    const previous = process.env.NODE_ENV;
+    process.env.NODE_ENV = value;
+    try {
+        return fn();
+    } finally {
+        if (previous === undefined) {
+            delete process.env.NODE_ENV;
+        } else {
+            process.env.NODE_ENV = previous;
+        }
+    }
+}
+
+/** Создаёт детерминированный TokenCounter и сохраняет все входы count() для проверки hot-path вызовов. */
+function recordingCounter(calls: string[]): TokenCounter {
+    return {
+        mode: 'tokenizer',
+        async ensureReady(): Promise<void> {},
+        count(text: string): number {
+            calls.push(text);
+            return text.length;
+        },
+    };
 }
 
 test('sweep prompt ends with the original/current/updated triad in that exact order', () => {
@@ -63,6 +91,49 @@ test('sweep prompt drops legacy context/* sections and the hardcoded instruction
     assert.ok(!built.prompt.includes('context/diagnostics'));
     assert.ok(!built.prompt.includes('recent_changes'));
     assert.ok(!built.prompt.includes('Rewrite the current window'));
+});
+
+test('sweep promptTokens uses estimate in production without full prompt tokenization', () => {
+    withNodeEnv('production', () => {
+        const calls: string[] = [];
+        const built = buildSweepPrompt({
+            modelId: 'sweep-default',
+            filePath: 'src/a.ts',
+            windowText: 'const value = 1;',
+            cursorOffset: 12,
+            recentEdits,
+            editVolume: 'medium',
+            tokenCounter: recordingCounter(calls),
+        });
+
+        assert.equal(calls.includes(built.prompt), false);
+        assert.equal(typeof built.promptTokens, 'number');
+        assert.ok(built.promptTokens > 0);
+    });
+});
+
+test('sweep promptTokens uses one exact full prompt count in development', () => {
+    withNodeEnv('development', () => {
+        const calls: string[] = [];
+        const built = buildSweepPrompt({
+            modelId: 'sweep-default',
+            filePath: 'src/a.ts',
+            windowText: 'const value = 1;',
+            cursorOffset: 12,
+            recentEdits,
+            editVolume: 'medium',
+            tokenCounter: recordingCounter(calls),
+        });
+        let promptCountCalls = 0;
+        for (let i = 0; i < calls.length; i++) {
+            if (calls[i] === built.prompt) {
+                promptCountCalls++;
+            }
+        }
+
+        assert.equal(promptCountCalls, 1);
+        assert.equal(built.promptTokens, built.prompt.length);
+    });
 });
 
 test('sweep recent changes render as native {path}.diff with original/updated states', () => {
