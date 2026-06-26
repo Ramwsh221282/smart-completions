@@ -1,516 +1,767 @@
-# Спецификация: хирургическое удаление Output channels из Sweep
+# Спецификация: Producers-only рефакторинг (Composite) для Sweep
 
-Версия под текущий код (commit `3fbb938`). Цель: убрать источник контекста **Output channels** (Theia Output-панель → `outputSnippets`) из промпта, потому что он нерелевантен для NES/FIM — это логи инструментов и сторонних расширений, не связанные с кодом/буфером текущего файла. Удаление освобождает токен-бюджет под код-релевантный контекст (соседей retrieval, recent edits, диагностики) и убирает неконтролируемый шум.
+Версия под текущий код (commit `571b826`, после удаления output channels). Цель: вынести **только слой producers** под два единых Composite-интерфейса, чтобы добавление новых источников/каналов было «реализовать + зарегистрировать», без правок Transform-стадий и Layout.
 
-Это **не** трогает retrieval-ядро (S/G/F, merge, rerank), embedding-индекс, FIM и логику Zeta. Удаляется только канал output.
+- **Семейство 1 — фронт-источники related** → интерфейс `RelatedSource`, Composite в `SweepContextCollector`.
+- **Семейство 2 — бэкенд-каналы retrieval** → интерфейс `RetrievalChannel`, Composite в `SweepRetrievalOrchestrator`.
 
----
-
-## 0. Критическая находка перед резкой: output шарится с NES
-
-Трассировка по репозиторию показала, что `output` живёт **не только в Sweep**. Он расшарен с NES-модулем (Zeta) через шим-ре-экспорты:
-
-- `src/browser/nes-module/sources/output-source.ts` → `export * from '../../sweep/data-gathering-layer/sources/output-source';`
-- `src/common/nes-context/output-filter.ts` → `export * from '../sweep/output-filter';`
-
-При этом:
-
-- `OutputSource` забинден **ровно один раз** — в `smart-completions-frontend-module.ts` (Sweep-путь). Отдельного NES-коллектора, который его дёргает, **нет**.
-- `NesRequest.outputSnippets` на фронте **никто не заполняет** — поле и поддержка в NES-билдере есть, но данных в них не приходит. То есть **NES-ветка output вырожденная (dead/vestigial)**.
-
-**Вывод по скоупу.** Удаление разбивается на две фазы:
-
-- **Phase 1 — Sweep (живой путь).** Убирает реально работающий канал output из Sweep-промпта. **Не трогает ни одного файла NES-модуля**, сборка и тесты остаются зелёными. Это закрывает поставленную задачу.
-- **Phase 2 — NES + общие файлы (опционально).** Вычищает вырожденную NES-ветку и общие `output-source.ts`/`output-filter.ts`. **Затрагивает Zeta-модуль**, поэтому идёт отдельно и требует явного решения (по действующему правилу «Zeta не трогаем до production-ready Sweep»).
-
-После Phase 1 общие файлы (`output-source.ts`, `output-filter.ts`, тип `SweepOutputSnippet`) остаются в репозитории как orphaned-but-compiling (на них ещё ссылается NES-шим и сам `output-source.ts`). Это сознательный компромисс ради неприкосновенности Zeta. Phase 2 их добивает.
+**Ключевой инвариант: поведение не меняется.** Рефакторинг — чистое вынесение. Выход (`relatedFiles`, `neighbors`, итоговый промпт) должен остаться байт-в-байт.
 
 ---
 
-## 1. Карта затрагиваемых точек
+## 0. Скоуп и инварианты
 
-### Phase 1 (Sweep, обязательная)
+### Что меняется
+- Вводятся два интерфейса-токена: `RelatedSource`, `RetrievalChannel`.
+- Три фронт-источника (`Hierarchy/Search/Scm`) реализуют `RelatedSource`.
+- Три адаптера-канала (`Semantic/Graph/Fuzzy`) реализуют `RetrievalChannel`, оборачивая существующие `EmbeddingIndexServiceImpl` / `SweepGraphChannel` / `SweepFuzzyChannel`.
+- Коллектор и оркестратор перестают хардкодить последовательность вызовов и обходят зарегистрированный список (`@multiInject`).
 
-| # | Файл | Что сделать |
-|---|------|-------------|
-| 1 | `src/browser/smart-completions-frontend-module.ts` | убрать import + `bind(OutputSource)` |
-| 2 | `src/browser/sweep/data-gathering-layer/sweep-context-collector.ts` | убрать import `OutputSource`, убрать `SweepOutputSnippet` из импорта типов, убрать `@inject` поля, убрать dead `hasErrors`-цикл, убрать сбор output, убрать поле в `CollectedSweepContext`, убрать из `return`, убрать 2 поля лога |
-| 3 | `src/browser/sweep/data-formatting-layer/sweep-request-builder.ts` | убрать присваивание `outputSnippets` + поле лога |
-| 4 | `src/common/sweep/types.ts` | убрать поле `outputSnippets?` из `SweepRequest` (тип `SweepOutputSnippet` пока **оставить**) |
-| 5 | `src/node/sweep/data-formatting-layer/context-trimmer.ts` | убрать `SweepOutputSnippet` из импорта, убрать поле из `BuildSweepPromptInput` и `TrimmedSweepContext`, убрать `keptOutput`-цикл, поле лога и поле в `return` |
-| 6 | `src/node/sweep/prompt-creating-layer/sweep-prompt-builder.ts` | убрать render-цикл `output/{channel}` + поле лога |
-| 7 | `src/node/sweep/sweep-backend-service.ts` | убрать проброс `outputSnippets: request.outputSnippets` |
-| 8 | `test/nes-prompt.test.ts` | поправить Sweep-тест «outline and output» — убрать output, оставить outline |
-| 9 | `test/battlefield.integration.test.ts` | убрать `outputSnippets` из вызова `buildSweepPrompt` (вызов `buildNesPrompt` не трогать) |
+### Что НЕ трогается (границы)
+- **Transform-стадии:** `dedupeRankRelated`, `mergeNeighborChannels`, reranker, `dedupeContextFiles`, `trimSweepContext` — логика и сигнатуры без изменений.
+- **Layout:** `buildSweepSections`, порядок секций промпта, спина (триада) — без изменений.
+- **Существующие классы каналов** `SweepGraphChannel` / `SweepFuzzyChannel` и общий `EmbeddingIndexServiceImpl` — внутренности и сигнатуры `retrieve(...)` не меняются (поэтому их юнит-тесты остаются валидными). Их оборачивают адаптеры.
+- `SymbolSource` (даёт outline, не related) — **не** `RelatedSource`, остаётся в коллекторе как есть.
+- FIM/Zeta — без изменений.
 
-### Phase 2 (NES + общие, опциональная, трогает Zeta)
+### Два критических риска по поведению (главное)
+Порядок регистрации = поведение, потому что в обоих семействах он определяет **tie-break** при равных score:
 
-| # | Файл | Что сделать |
-|---|------|-------------|
-| 10 | `src/browser/sweep/data-gathering-layer/sources/output-source.ts` | удалить файл |
-| 11 | `src/browser/nes-module/sources/output-source.ts` | удалить файл (шим) |
-| 12 | `src/common/sweep/output-filter.ts` | удалить файл |
-| 13 | `src/common/nes-context/output-filter.ts` | удалить файл (шим) |
-| 14 | `src/common/sweep/types.ts` | удалить интерфейс `SweepOutputSnippet` |
-| 15 | `src/common/nes-types.ts` | удалить `NesOutputSnippet` + поле `NesRequest.outputSnippets` |
-| 16 | `src/node/nes-module/context-formation/builder.ts` | убрать алиас `OutputSnippet`, поля input/trimmed, `keptOutput`-цикл, render-цикл |
-| 17 | `src/node/services/nes-backend-service.ts` | убрать проброс `outputSnippets` |
-| 18 | `test/nes-context-sources.test.ts` | убрать 3 теста `extractRelevantOutput` + импорт |
-| 19 | `test/battlefield.integration.test.ts` | убрать `extractRelevantOutput`-setup + `outputSnippets` из `buildNesPrompt` |
+1. **Related:** `dedupeRankRelated` сортирует по `score`, а при равенстве — по `a.index - b.index`, где index = порядок добавления кандидатов. Сейчас это `hierarchy → search → scm`. Список регистрации `RelatedSource` **обязан** совпадать.
+2. **Channels:** `mergeNeighborChannels` использует стабильную сортировку по RRF-score; при равном score выигрывает сосед из **более раннего** канала. Сейчас порядок `semantic → graph → fuzzy`. Список регистрации `RetrievalChannel` **обязан** совпадать.
+
+Эти два порядка пинятся порядком `bind(...).toService(...)` в DI и закрываются golden-тестами (Часть C).
+
+### Почему адаптеры для каналов, но прямая реализация для источников
+- **Каналы:** `Semantic` оборачивает **общий** `EmbeddingIndexServiceImpl` (его трогать нельзя), а `Graph`/`Fuzzy` имеют юнит-тесты на текущую сигнатуру `retrieve(signals|symbols, topN)`. Адаптеры сохраняют и общий сервис, и эти тесты нетронутыми.
+- **Источники:** `Hierarchy/Search/Scm` — sweep-локальные, прямых юнит-тестов на их `collect(...)` нет (зависят от Theia-runtime), поэтому смена сигнатуры на `collect(ctx)` безопасна и убирает лишнюю индирекцию.
 
 ---
 
-## 2. Phase 1 — пошаговые правки (Sweep)
+## ЧАСТЬ A — Composite фронт-источников (`RelatedSource`)
 
-Порядок: типы/общий слой → бэкенд → фронт → тесты. Так промежуточные состояния минимально «красные».
-
-### 2.1 `src/common/sweep/types.ts` — поле в `SweepRequest`
-
-Убрать строку `outputSnippets?: SweepOutputSnippet[];` из `SweepRequest`. **Интерфейс `SweepOutputSnippet` НЕ трогать** (его ещё использует `output-source.ts`).
+### A.1 Новый файл: `src/browser/sweep/data-gathering-layer/sources/related-source.ts`
 
 ```ts
-// БЫЛО
-export interface SweepRequest {
+import URI from '@theia/core/lib/common/uri';
+import { RelatedCandidate } from '../../../../common/sweep/related-files';
+
+/** Контекст одного прохода сбора related-кандидатов; несёт всё, что нужно любому источнику. */
+export interface RelatedSourceContext {
+    languageId: string;
+    uri: URI;
+    position: { line: number; character: number };
+    currentRelPath: string;
+    queries: string[];
+}
+
+/** Источник related-кандидатов для Sweep file-блоков; собирается в композит SweepContextCollector. */
+export interface RelatedSource {
+    /** Стабильный id для логов/диагностики и метки safeAsync. */
+    readonly id: string;
+    /** Возвращает кандидатов; ошибки изолируются композитом (safeAsync), сам источник может бросать. */
+    collect(ctx: RelatedSourceContext): Promise<RelatedCandidate[]>;
+}
+
+/** DI-токен для @multiInject; порядок биндингов = порядок tie-break в dedupeRankRelated. */
+export const RelatedSource = Symbol('RelatedSource');
+```
+
+> `export const RelatedSource` (значение-токен) и `export interface RelatedSource` (тип) сосуществуют через declaration merging — стандартный inversify-паттерн.
+
+### A.2 `sources/hierarchy-source.ts` — реализовать интерфейс
+
+Сменить сигнатуру `collect` на `collect(ctx)` и добавить `id`. Тело не меняется — только распаковка из `ctx`.
+
+```ts
+// БЫЛО:
+@injectable()
+export class HierarchyRelatedSource {
+    // ...inject...
+    async collect(languageId: string, uri: URI, position: { line: number; character: number }, currentRelPath: string): Promise<RelatedCandidate[]> {
+        const candidates: RelatedCandidate[] = [];
+        await this.collectCallers(languageId, uri, position, currentRelPath, candidates);
+        await this.collectTypes(languageId, uri, position, currentRelPath, candidates);
+        LOG.info('Sweep hierarchy candidates collected', { languageId, candidates: candidates.length });
+        return candidates;
+    }
+
+// СТАНЕТ:
+@injectable()
+export class HierarchyRelatedSource implements RelatedSource {
+    readonly id = 'hierarchy';
+    // ...inject (без изменений)...
+    async collect(ctx: RelatedSourceContext): Promise<RelatedCandidate[]> {
+        const { languageId, uri, position, currentRelPath } = ctx;
+        const candidates: RelatedCandidate[] = [];
+        await this.collectCallers(languageId, uri, position, currentRelPath, candidates);
+        await this.collectTypes(languageId, uri, position, currentRelPath, candidates);
+        LOG.info('Sweep hierarchy candidates collected', { languageId, candidates: candidates.length });
+        return candidates;
+    }
+```
+
+Добавить импорт в шапку файла:
+```ts
+import { RelatedSource, RelatedSourceContext } from './related-source';
+```
+Приватные методы `collectCallers/collectTypes/pushItem` — **без изменений**.
+
+### A.3 `sources/search-source.ts` — реализовать интерфейс
+
+```ts
+// БЫЛО:
+export class SearchRelatedSource {
     // ...
-    relatedFiles?: SweepRelatedFile[];
-    outline?: string;
-    outputSnippets?: SweepOutputSnippet[];   // ← УДАЛИТЬ ЭТУ СТРОКУ
-}
+    async collect(queries: string[], currentRelPath: string): Promise<RelatedCandidate[]> {
+        const candidates: RelatedCandidate[] = [];
+        for (let i = 0; i < queries.length && i < MAX_QUERIES; i++) {
+            // ...тело без изменений, использует queries[i] и currentRelPath...
 
-// СТАНЕТ
-export interface SweepRequest {
+// СТАНЕТ:
+export class SearchRelatedSource implements RelatedSource {
+    readonly id = 'search';
     // ...
-    relatedFiles?: SweepRelatedFile[];
-    outline?: string;
-}
+    async collect(ctx: RelatedSourceContext): Promise<RelatedCandidate[]> {
+        const { queries, currentRelPath } = ctx;
+        const candidates: RelatedCandidate[] = [];
+        for (let i = 0; i < queries.length && i < MAX_QUERIES; i++) {
+            // ...тело идентично...
 ```
+Импорт `import { RelatedSource, RelatedSourceContext } from './related-source';`. Приватный `runSearch` — без изменений.
 
-### 2.2 `src/node/sweep/data-formatting-layer/context-trimmer.ts`
-
-**(a) Импорт (строка 8)** — убрать `SweepOutputSnippet`, остальное оставить:
+### A.4 `sources/scm-source.ts` — реализовать интерфейс
 
 ```ts
-// БЫЛО
-import { SweepEditVolume, SweepModelId, SweepOutputSnippet, SweepRelatedFile } from '../../../common/sweep/types';
-// СТАНЕТ
-import { SweepEditVolume, SweepModelId, SweepRelatedFile } from '../../../common/sweep/types';
-```
+// БЫЛО:
+export class ScmChangedFilesSource {
+    async collect(currentRelPath: string): Promise<RelatedCandidate[]> {
+        // ...использует currentRelPath...
 
-**(b) `BuildSweepPromptInput`** — убрать поле:
+// СТАНЕТ:
+export class ScmChangedFilesSource implements RelatedSource {
+    readonly id = 'scm';
+    async collect(ctx: RelatedSourceContext): Promise<RelatedCandidate[]> {
+        const { currentRelPath } = ctx;
+        // ...тело идентично...
+```
+Импорт `import { RelatedSource, RelatedSourceContext } from './related-source';`.
+
+### A.5 `sweep-context-collector.ts` — композит вместо хардкода
+
+Цель: заменить три отдельных `safeAsync(...)`-вызова и `pushAll` на цикл по `this.relatedSources`. Порядок массива = порядок биндинга = `hierarchy, search, scm`. `safeAsync` и изоляция ошибок сохраняются (метка = `src.id`). Логи остаются эквивалентными.
+
+**(a) Импорты:** убрать прямые импорты трёх источников, добавить `RelatedSource`/контекст и `multiInject`:
 
 ```ts
-// БЫЛО
-    relatedFiles?: SweepRelatedFile[];
-    outline?: string;
-    outputSnippets?: SweepOutputSnippet[];   // ← УДАЛИТЬ
-    editVolume: SweepEditVolume;
-// СТАНЕТ
-    relatedFiles?: SweepRelatedFile[];
-    outline?: string;
-    editVolume: SweepEditVolume;
-```
+// БЫЛО (строки 1, 11–13):
+import { inject, injectable } from '@theia/core/shared/inversify';
+// ...
+import { HierarchyRelatedSource } from './sources/hierarchy-source';
+import { ScmChangedFilesSource } from './sources/scm-source';
+import { SearchRelatedSource } from './sources/search-source';
 
-**(c) `TrimmedSweepContext`** — убрать поле:
+// СТАНЕТ:
+import { inject, injectable, multiInject } from '@theia/core/shared/inversify';
+// ...
+import { RelatedSource, RelatedSourceContext } from './sources/related-source';
+```
+`SymbolSource` и `WorkspaceFiles` импорты — **оставить**.
+
+**(b) Поля инъекции:** заменить три `@inject(...Source)` на один `@multiInject(RelatedSource)`:
 
 ```ts
-// БЫЛО
-    diagnostics: DiagnosticDTO[];
-    outline: string;
-    outputSnippets: SweepOutputSnippet[];    // ← УДАЛИТЬ
-    prefill: string;
-// СТАНЕТ
-    diagnostics: DiagnosticDTO[];
-    outline: string;
-    prefill: string;
-```
+// БЫЛО (строки 44–49):
+    // Поиск по воркспейсу для нахождения файлов с похожими символами.
+    @inject(SearchRelatedSource) protected readonly searchSource!: SearchRelatedSource;
+    // Call/type hierarchy LSP для нахождения файлов-вызывателей и типов-родителей.
+    @inject(HierarchyRelatedSource) protected readonly hierarchySource!: HierarchyRelatedSource;
+    // SCM dirty-файлы как низкоприоритетный сигнал о co-changed зависимостях.
+    @inject(ScmChangedFilesSource) protected readonly scmSource!: ScmChangedFilesSource;
 
-**(d) Логика триминга** — удалить весь блок `keptOutput` (≈ строки 253–266):
+// СТАНЕТ:
+    // Все related-источники в порядке регистрации (= порядок tie-break в dedupeRankRelated): hierarchy, search, scm.
+    @multiInject(RelatedSource) protected readonly relatedSources!: RelatedSource[];
+```
+`@inject(SymbolSource)` и `@inject(WorkspaceFiles)` — **оставить**.
+
+**(c) Тело `collect()`:** заменить блок сбора (строки 76–95) на цикл по композиту. `currentRel`, `outline`, `queries` — без изменений.
 
 ```ts
-// УДАЛИТЬ ЦЕЛИКОМ:
-    const keptOutput: SweepOutputSnippet[] = [];
-    for (const snippet of input.outputSnippets ?? []) {
-        const cost = tokenCost(snippet.text, counter) + tokenCost(snippet.channel, counter) + 8;
-        if (cost <= remaining) {
-            keptOutput.push(snippet);
-            remaining -= cost;
-        } else {
-            if (process.env.NODE_ENV === 'development') {
-                LOG.debug('Sweep output snippet trimmed by budget', { channel: snippet.channel, cost, remaining });
-            }
-            break;
-        }
-    }
-```
+// БЫЛО (строки 76–95):
+        const fromHierarchy = await this.safeAsync(
+            () => this.hierarchySource.collect(params.languageId, uri, lspPosition, currentRel),
+            [] as RelatedCandidate[],
+            'hierarchy',
+        );
+        const fromSearch = await this.safeAsync(() => this.searchSource.collect(queries, currentRel), [] as RelatedCandidate[], 'search');
+        const fromScm = await this.safeAsync(() => this.scmSource.collect(currentRel), [] as RelatedCandidate[], 'scm');
 
-**(e) Поле лога** в `LOG.info('Sweep context trimmed', {...})` — убрать `outputOut`:
+        const relatedCandidates: RelatedCandidate[] = [];
+        pushAll(relatedCandidates, fromHierarchy);
+        pushAll(relatedCandidates, fromSearch);
+        pushAll(relatedCandidates, fromScm);
+        const relatedFiles = dedupeRankRelated(relatedCandidates, params.relatedTopN);
 
-```ts
-// БЫЛО
-        outlineChars: outline.length,
-        outputOut: keptOutput.length,        // ← УДАЛИТЬ
-        prefillTokens: tokenCost(prefill, counter),
-// СТАНЕТ
-        outlineChars: outline.length,
-        prefillTokens: tokenCost(prefill, counter),
-```
-
-**(f) `return`** — убрать поле:
-
-```ts
-// БЫЛО
-        outline,
-        outputSnippets: keptOutput,          // ← УДАЛИТЬ
-        prefill,
-// СТАНЕТ
-        outline,
-        prefill,
-```
-
-### 2.3 `src/node/sweep/prompt-creating-layer/sweep-prompt-builder.ts`
-
-**(a) Render-блок в `buildSweepSections`** (≈ строки 116–118) — удалить цикл output. Соседние блоки outline/diagnostics/diff оставить:
-
-```ts
-// БЫЛО
-    if (trimmed.diagnostics.length > 0) {
-        sections.push(`<|file_sep|>diagnostics/${input.filePath}\n${formatSweepDiagnosticsLines(trimmed.diagnostics)}`);
-    }
-    for (const snippet of trimmed.outputSnippets) {                                     // ← УДАЛИТЬ
-        sections.push(`<|file_sep|>output/${snippet.channel}\n${normalizeCrlf(snippet.text)}`); // ← УДАЛИТЬ
-    }                                                                                   // ← УДАЛИТЬ
-
-    sections.push(...formatSweepDiffBlocks(trimmed.recentEdits));
-// СТАНЕТ
-    if (trimmed.diagnostics.length > 0) {
-        sections.push(`<|file_sep|>diagnostics/${input.filePath}\n${formatSweepDiagnosticsLines(trimmed.diagnostics)}`);
-    }
-
-    sections.push(...formatSweepDiffBlocks(trimmed.recentEdits));
-```
-
-> Проверить: если после удаления `normalizeCrlf` больше нигде в файле не используется — убрать и его импорт. Если используется (вероятно, да — для других блоков) — оставить.
-
-**(b) Поле лога** (≈ строка 77) — убрать `outputSnippets`:
-
-```ts
-// БЫЛО
-        hasOutline: Boolean(trimmed.outline),
-        outputSnippets: trimmed.outputSnippets.length,   // ← УДАЛИТЬ
-        dedupDropped: deduped.dropped,
-// СТАНЕТ
-        hasOutline: Boolean(trimmed.outline),
-        dedupDropped: deduped.dropped,
-```
-
-### 2.4 `src/node/sweep/sweep-backend-service.ts`
-
-Убрать проброс (≈ строка 104) в объекте, передаваемом в `buildSweepPrompt`:
-
-```ts
-// БЫЛО
-                relatedFiles: request.relatedFiles,
-                outline: request.outline,
-                outputSnippets: request.outputSnippets,   // ← УДАЛИТЬ
-                editVolume: this.config.editVolume,
-// СТАНЕТ
-                relatedFiles: request.relatedFiles,
-                outline: request.outline,
-                editVolume: this.config.editVolume,
-```
-
-### 2.5 `src/browser/sweep/data-gathering-layer/sweep-context-collector.ts`
-
-**(a) Импорты** — убрать import `OutputSource` (строка 12) и `SweepOutputSnippet` из импорта типов (строка 10):
-
-```ts
-// БЫЛО
-import { SweepOutputSnippet, SweepRelatedFile } from '../../../common/sweep/types';
-// СТАНЕТ
-import { SweepRelatedFile } from '../../../common/sweep/types';
-
-// УДАЛИТЬ СТРОКУ ЦЕЛИКОМ:
-import { OutputSource } from './sources/output-source';
-```
-
-**(b) `CollectedSweepContext`** — убрать поле:
-
-```ts
-// БЫЛО
-export interface CollectedSweepContext {
-    relatedFiles: SweepRelatedFile[];
-    outline?: string;
-    outputSnippets: SweepOutputSnippet[];    // ← УДАЛИТЬ
-}
-// СТАНЕТ
-export interface CollectedSweepContext {
-    relatedFiles: SweepRelatedFile[];
-    outline?: string;
-}
-```
-
-**(c) `@inject` поля** — убрать инъекцию `outputSource` (строка 47, вместе с комментарием 46):
-
-```ts
-// УДАЛИТЬ:
-    // Theia Output каналы для построения output/ псевдофайла в промпте.
-    @inject(OutputSource) protected readonly outputSource!: OutputSource;
-```
-
-**(d) Тело `collect()`** — удалить dead `hasErrors`-цикл и сбор output (строки 93–101). `hasErrors` использовался **только** для гейта output, поэтому удаляется целиком:
-
-```ts
-// УДАЛИТЬ ЦЕЛИКОМ (строки 93–101):
-        let hasErrors = false;
-        for (let i = 0; i < params.diagnostics.length; i++) {
-            if (params.diagnostics[i].severity === 'error') {
-                hasErrors = true;
-                break;
-            }
-        }
-        // Output пропускается при наличии ошибок, чтобы не перегружать промпт нерелевантным шумом сборки.
-        const outputSnippets = hasErrors ? [] : this.safe(() => this.outputSource.collect(), [] as SweepOutputSnippet[], 'output');
-```
-
-**(e) Поля лога** в `LOG.info('Sweep context collected', {...})` — убрать `outputSnippets` и `outputSkippedDueToErrors`:
-
-```ts
-// БЫЛО
+        LOG.info('Sweep context collected', {
+            currentRel,
+            queries: queries.length,
+            hierarchyCandidates: fromHierarchy.length,
+            searchCandidates: fromSearch.length,
+            scmCandidates: fromScm.length,
+            relatedFiles: relatedFiles.length,
             hasOutline: Boolean(outline),
             diagnostics: params.diagnostics.length,
-            outputSnippets: outputSnippets.length,          // ← УДАЛИТЬ
-            outputSkippedDueToErrors: hasErrors,            // ← УДАЛИТЬ
         });
-// СТАНЕТ
+
+// СТАНЕТ:
+        const sourceCtx: RelatedSourceContext = {
+            languageId: params.languageId,
+            uri,
+            position: lspPosition,
+            currentRelPath: currentRel,
+            queries,
+        };
+
+        // Композит: обходим источники в порядке регистрации; каждый изолирован safeAsync по своему id.
+        const relatedCandidates: RelatedCandidate[] = [];
+        const perSource: Record<string, number> = {};
+        for (const source of this.relatedSources) {
+            const produced = await this.safeAsync(() => source.collect(sourceCtx), [] as RelatedCandidate[], source.id);
+            perSource[source.id] = produced.length;
+            pushAll(relatedCandidates, produced);
+        }
+        const relatedFiles = dedupeRankRelated(relatedCandidates, params.relatedTopN);
+
+        LOG.info('Sweep context collected', {
+            currentRel,
+            queries: queries.length,
+            perSource,
+            relatedFiles: relatedFiles.length,
             hasOutline: Boolean(outline),
             diagnostics: params.diagnostics.length,
         });
 ```
 
-**(f) `return`** — убрать `outputSnippets`:
+> Порядок `pushAll` сохраняется ровно потому, что `this.relatedSources` забиндены в порядке `hierarchy, search, scm`. `pushAll`, `safe`, `safeAsync` — без изменений. `RelatedCandidate` импорт остаётся (используется в типе массива и fallback).
+
+### A.6 DI: `src/browser/smart-completions-frontend-module.ts`
+
+Привязать каждый источник к токену `RelatedSource` **в порядке** hierarchy → search → scm (этот порядок и есть поведение).
 
 ```ts
-// БЫЛО
-        return { relatedFiles, outline: outline || undefined, outputSnippets };
-// СТАНЕТ
-        return { relatedFiles, outline: outline || undefined };
+// Добавить импорт:
+import { RelatedSource } from './sweep/data-gathering-layer/sources/related-source';
+
+// БЫЛО (строки 43–48):
+    bind(WorkspaceFiles).toSelf().inSingletonScope();
+    bind(SymbolSource).toSelf().inSingletonScope();
+    bind(SearchRelatedSource).toSelf().inSingletonScope();
+    bind(HierarchyRelatedSource).toSelf().inSingletonScope();
+    bind(ScmChangedFilesSource).toSelf().inSingletonScope();
+    bind(SweepContextCollector).toSelf().inSingletonScope();
+
+// СТАНЕТ (порядок toService = порядок tie-break):
+    bind(WorkspaceFiles).toSelf().inSingletonScope();
+    bind(SymbolSource).toSelf().inSingletonScope();
+
+    bind(HierarchyRelatedSource).toSelf().inSingletonScope();
+    bind(RelatedSource).toService(HierarchyRelatedSource);
+    bind(SearchRelatedSource).toSelf().inSingletonScope();
+    bind(RelatedSource).toService(SearchRelatedSource);
+    bind(ScmChangedFilesSource).toSelf().inSingletonScope();
+    bind(RelatedSource).toService(ScmChangedFilesSource);
+
+    bind(SweepContextCollector).toSelf().inSingletonScope();
 ```
 
-> Примечание: `this.safe(...)` остаётся (используется для других источников — outline и т.д.). Удаляется только output-вызов.
-
-### 2.6 `src/browser/sweep/data-formatting-layer/sweep-request-builder.ts`
-
-**(a) Сборка запроса** (≈ строка 99) — убрать поле:
-
-```ts
-// БЫЛО
-            relatedFiles: collected.relatedFiles,
-            outline: collected.outline,
-            outputSnippets: collected.outputSnippets,   // ← УДАЛИТЬ
-        };
-// СТАНЕТ
-            relatedFiles: collected.relatedFiles,
-            outline: collected.outline,
-        };
-```
-
-**(b) Поле лога** (≈ строка 108) — убрать `outputSnippets`:
-
-```ts
-// БЫЛО
-            hasOutline: Boolean(request.outline),
-            outputSnippets: request.outputSnippets.length,   // ← УДАЛИТЬ
-        });
-// СТАНЕТ
-            hasOutline: Boolean(request.outline),
-        });
-```
-
-### 2.7 `src/browser/smart-completions-frontend-module.ts`
-
-**(a) Импорт** (строка 17) — удалить:
-
-```ts
-// УДАЛИТЬ СТРОКУ:
-import { OutputSource } from './sweep/data-gathering-layer/sources/output-source';
-```
-
-**(b) DI-биндинг** (строка 46) — удалить:
-
-```ts
-// УДАЛИТЬ СТРОКУ:
-    bind(OutputSource).toSelf().inSingletonScope();
-```
-
-### 2.8 `test/nes-prompt.test.ts` — Sweep-тест «outline and output»
-
-Тест на строке ≈309 проверяет и outline, и output для Sweep. Убрать output-часть, оставить outline:
-
-```ts
-// БЫЛО
-test('sweep outline and output render as pseudo-files in zone B', () => {
-    const built = buildSweepPrompt({
-        modelId: 'sweep-default',
-        filePath: 'src/a.ts',
-        windowText: 'const value = 1;',
-        cursorOffset: 5,
-        recentEdits,
-        editVolume: 'medium',
-        outline: 'class A [1:0-3:1]\n  m [2:2-2:9] <-- cursor',
-        outputSnippets: [{ channel: 'build', text: 'ERROR src/a.ts:1: boom' }],   // ← УДАЛИТЬ
-    });
-    assert.ok(built.prompt.includes('<|file_sep|>outline/src/a.ts\nclass A [1:0-3:1]'));
-    assert.ok(built.prompt.includes('<|file_sep|>output/build\nERROR src/a.ts:1: boom'));  // ← УДАЛИТЬ
-});
-
-// СТАНЕТ
-test('sweep outline renders as pseudo-file in zone B', () => {
-    const built = buildSweepPrompt({
-        modelId: 'sweep-default',
-        filePath: 'src/a.ts',
-        windowText: 'const value = 1;',
-        cursorOffset: 5,
-        recentEdits,
-        editVolume: 'medium',
-        outline: 'class A [1:0-3:1]\n  m [2:2-2:9] <-- cursor',
-    });
-    assert.ok(built.prompt.includes('<|file_sep|>outline/src/a.ts\nclass A [1:0-3:1]'));
-});
-```
-
-### 2.9 `test/battlefield.integration.test.ts` — вызов `buildSweepPrompt`
-
-Убрать `outputSnippets,` **только** из объекта `buildSweepPrompt` (≈ строка 308). Вызов `buildNesPrompt` (≈ строка 325) и setup `extractRelevantOutput`/`outputSnippets` (строки 280–281) в Phase 1 **оставить** — они нужны NES-ветке до Phase 2.
-
-```ts
-// В объекте buildSweepPrompt({ ... }):
-//   relatedFiles,
-//   outline,
-//   outputSnippets,    ← УДАЛИТЬ ЭТУ СТРОКУ (только в buildSweepPrompt-ветке)
-//   editVolume: 'medium',
-```
+> Порядок `toService` критичен: `@multiInject` возвращает массив в порядке биндингов. `hierarchy, search, scm` = текущий порядок `pushAll`.
 
 ---
 
-## 3. Проверка Phase 1
+## ЧАСТЬ B — Composite бэкенд-каналов (`RetrievalChannel`)
+
+### B.1 Новый файл: `src/node/sweep/retrieval/retrieval-channel.ts`
+
+```ts
+import type { Neighbor } from '../../../common/embedding-types';
+import type { GraphQuerySignals } from '../../../common/sweep/types';
+import type { SweepRetrievalConfig } from './sweep-retrieval-orchestrator';
+
+/** Единый вход для всех каналов; каждый канал берёт нужные ему поля. */
+export interface RetrievalChannelInput {
+    query: string;
+    signals: GraphQuerySignals;
+    fuzzySymbols: string[];
+    signal?: AbortSignal;
+}
+
+/** Канал retrieval; собирается в композит SweepRetrievalOrchestrator. */
+export interface RetrievalChannel {
+    /** Стабильный id для логов и диагностики. */
+    readonly id: string;
+    /** true → канал работает только для code mode (граф/fuzzy); false → и для прозы (semantic). */
+    readonly codeOnly: boolean;
+    /** Включён ли канал по конфигу (semantic — всегда; graph/fuzzy — по флагу). */
+    isEnabled(config: SweepRetrievalConfig): boolean;
+    /** Возвращает соседей; sync или async — оркестратор делает await в любом случае. */
+    retrieve(input: RetrievalChannelInput, topN: number): Promise<Neighbor[]> | Neighbor[];
+}
+
+/** DI-токен для @multiInject; порядок биндингов = порядок tie-break в mergeNeighborChannels. */
+export const RetrievalChannel = Symbol('RetrievalChannel');
+```
+
+### B.2 Новый файл: `src/node/sweep/retrieval/channels/semantic-retrieval-channel.ts`
+
+Оборачивает общий `EmbeddingIndexServiceImpl`. Воспроизводит текущий `retrieveSemantic` (включая логи) **дословно**.
+
+```ts
+import { injectable } from '@theia/core/shared/inversify';
+import type { Neighbor } from '../../../../common/embedding-types';
+import { SweepLogger } from '../../../../common/sweep/logger';
+import { EmbeddingIndexServiceImpl } from '../../../services/embedding-index-service';
+import type { RetrievalChannel, RetrievalChannelInput } from '../retrieval-channel';
+import type { SweepRetrievalConfig } from '../sweep-retrieval-orchestrator';
+
+const LOG = new SweepLogger('node:retrieval-orchestrator');
+
+/** Семантический канал S: LanceDB + BM25 → RRF через общий EmbeddingIndexServiceImpl (не модифицируем). */
+@injectable()
+export class SemanticRetrievalChannel implements RetrievalChannel {
+    readonly id = 'semantic';
+    readonly codeOnly = false;                 // работает и для прозы
+    private readonly embedding: EmbeddingIndexServiceImpl;
+
+    constructor(embedding: EmbeddingIndexServiceImpl) {
+        this.embedding = embedding;
+    }
+
+    isEnabled(): boolean {
+        return true;                           // S всегда активен (флага отключения нет — как сейчас)
+    }
+
+    async retrieve(input: RetrievalChannelInput, topN: number): Promise<Neighbor[]> {
+        LOG.info('Sweep semantic retrieval starting', { queryChars: input.query.length, topN });
+        const neighbors = await this.embedding.retrieve(input.query, topN, input.signal);
+        const files = new Array<string>(neighbors.length);
+        for (let i = 0; i < neighbors.length; i++) {
+            files[i] = neighbors[i].filePath;
+        }
+        LOG.info('Sweep semantic retrieval completed', { neighbors: neighbors.length, files });
+        return neighbors;
+    }
+}
+```
+
+### B.3 Новый файл: `src/node/sweep/retrieval/channels/graph-retrieval-channel.ts`
+
+```ts
+import { injectable } from '@theia/core/shared/inversify';
+import type { Neighbor } from '../../../../common/embedding-types';
+import { SweepGraphChannel } from '../graph/sweep-graph-channel';
+import type { RetrievalChannel, RetrievalChannelInput } from '../retrieval-channel';
+import type { SweepRetrievalConfig } from '../sweep-retrieval-orchestrator';
+
+/** Структурный канал G поверх существующего SweepGraphChannel (его сигнатуру не меняем). */
+@injectable()
+export class GraphRetrievalChannel implements RetrievalChannel {
+    readonly id = 'graph';
+    readonly codeOnly = true;
+    private readonly graph: SweepGraphChannel;
+
+    constructor(graph: SweepGraphChannel) {
+        this.graph = graph;
+    }
+
+    isEnabled(config: SweepRetrievalConfig): boolean {
+        return config.graph.enabled;
+    }
+
+    retrieve(input: RetrievalChannelInput, topN: number): Neighbor[] {
+        return this.graph.retrieve(input.signals, topN);
+    }
+}
+```
+
+### B.4 Новый файл: `src/node/sweep/retrieval/channels/fuzzy-retrieval-channel.ts`
+
+```ts
+import { injectable } from '@theia/core/shared/inversify';
+import type { Neighbor } from '../../../../common/embedding-types';
+import { SweepFuzzyChannel } from '../fuzzy/sweep-fuzzy-channel';
+import type { RetrievalChannel, RetrievalChannelInput } from '../retrieval-channel';
+import type { SweepRetrievalConfig } from '../sweep-retrieval-orchestrator';
+
+/** Нечёткий канал F поверх существующего SweepFuzzyChannel (его сигнатуру не меняем). */
+@injectable()
+export class FuzzyRetrievalChannel implements RetrievalChannel {
+    readonly id = 'fuzzy';
+    readonly codeOnly = true;
+    private readonly fuzzy: SweepFuzzyChannel;
+
+    constructor(fuzzy: SweepFuzzyChannel) {
+        this.fuzzy = fuzzy;
+    }
+
+    isEnabled(config: SweepRetrievalConfig): boolean {
+        return config.fuzzy.enabled;
+    }
+
+    retrieve(input: RetrievalChannelInput, topN: number): Neighbor[] {
+        return this.fuzzy.retrieve(input.fuzzySymbols, topN);
+    }
+}
+```
+
+### B.5 `sweep-retrieval-orchestrator.ts` — композит вместо хардкода
+
+Цель: заменить три явных `channels.push(...)` на цикл по `this.channels`. merge/rerank/finalTopN/poolN — **без изменений**. `retrieveSemantic` уезжает в `SemanticRetrievalChannel` (B.2) и из оркестратора удаляется.
+
+**(a) Импорты/конструктор:** убрать прямые поля `embedding/graph/fuzzy`, инжектить `RetrievalChannel[]`.
+
+```ts
+// БЫЛО:
+import { injectable } from '@theia/core/shared/inversify';
+// ...
+import { EmbeddingIndexServiceImpl } from '../../services/embedding-index-service';
+import { SweepFuzzyChannel } from './fuzzy/sweep-fuzzy-channel';
+import { SweepGraphChannel } from './graph/sweep-graph-channel';
+// ...
+@injectable()
+export class SweepRetrievalOrchestrator {
+    private readonly reranker = new SweepRerankerClient();
+    private rerankerBroken = false;
+    private readonly embedding: EmbeddingIndexServiceImpl;
+    private readonly graph: SweepGraphChannel;
+    private readonly fuzzy: SweepFuzzyChannel;
+
+    constructor(
+        embedding: EmbeddingIndexServiceImpl,
+        graph: SweepGraphChannel,
+        fuzzy: SweepFuzzyChannel,
+    ) {
+        this.embedding = embedding;
+        this.graph = graph;
+        this.fuzzy = fuzzy;
+    }
+
+// СТАНЕТ:
+import { injectable, multiInject } from '@theia/core/shared/inversify';
+// ...
+import { RetrievalChannel, RetrievalChannelInput } from './retrieval-channel';
+// (импорты EmbeddingIndexServiceImpl / SweepFuzzyChannel / SweepGraphChannel здесь больше не нужны)
+// ...
+@injectable()
+export class SweepRetrievalOrchestrator {
+    private readonly reranker = new SweepRerankerClient();
+    private rerankerBroken = false;
+    private readonly channels: RetrievalChannel[];
+
+    /** Каналы инжектятся в порядке регистрации (= порядок tie-break в merge): semantic, graph, fuzzy. */
+    constructor(@multiInject(RetrievalChannel) channels: RetrievalChannel[]) {
+        this.channels = channels;
+    }
+```
+
+**(b) Метод `retrieve`:** заменить три `push` на цикл. Остальное (finalTopN, poolN, merged, rerank-гейт) без изменений.
+
+```ts
+// БЫЛО:
+    async retrieve(input: OrchestratorInput, config: SweepRetrievalConfig): Promise<Neighbor[]> {
+        const finalTopN = Math.max(1, Math.min(config.rerank.finalTopN, input.topN));
+        const poolN = Math.max(finalTopN, config.rerank.candidatePoolN);
+        const channels: Neighbor[][] = [];
+        const semantic = await this.retrieveSemantic(input.query, poolN, input.signal);
+        channels.push(semantic);
+        if (input.fileMode === 'code' && config.graph.enabled) {
+            channels.push(this.graph.retrieve(input.signals, poolN));
+        }
+        if (input.fileMode === 'code' && config.fuzzy.enabled) {
+            channels.push(this.fuzzy.retrieve(input.fuzzySymbols, poolN));
+        }
+        const merged = mergeNeighborChannels(channels, poolN);
+        if (!config.rerank.enabled || this.rerankerBroken || !isAmbiguous(merged, config.rerank.ambiguityMargin, finalTopN)) {
+            return merged.slice(0, finalTopN);
+        }
+        try {
+            return await this.rerankNeighbors(merged, input.query, config.rerank, finalTopN, input.signal);
+        } catch (error) {
+            LOG.warn('Sweep rerank failed, falling back to merged order', { error: error instanceof Error ? error.message : String(error) });
+            return merged.slice(0, finalTopN);
+        }
+    }
+
+// СТАНЕТ:
+    async retrieve(input: OrchestratorInput, config: SweepRetrievalConfig): Promise<Neighbor[]> {
+        const finalTopN = Math.max(1, Math.min(config.rerank.finalTopN, input.topN));
+        const poolN = Math.max(finalTopN, config.rerank.candidatePoolN);
+        const channelInput: RetrievalChannelInput = {
+            query: input.query,
+            signals: input.signals,
+            fuzzySymbols: input.fuzzySymbols,
+            signal: input.signal,
+        };
+
+        // Композит: обходим каналы в порядке регистрации; code-only пропускаются для прозы, флаг-гейтятся конфигом.
+        const lists: Neighbor[][] = [];
+        for (const channel of this.channels) {
+            if (channel.codeOnly && input.fileMode !== 'code') {
+                continue;
+            }
+            if (!channel.isEnabled(config)) {
+                continue;
+            }
+            lists.push(await channel.retrieve(channelInput, poolN));
+        }
+
+        const merged = mergeNeighborChannels(lists, poolN);
+        if (!config.rerank.enabled || this.rerankerBroken || !isAmbiguous(merged, config.rerank.ambiguityMargin, finalTopN)) {
+            return merged.slice(0, finalTopN);
+        }
+        try {
+            return await this.rerankNeighbors(merged, input.query, config.rerank, finalTopN, input.signal);
+        } catch (error) {
+            LOG.warn('Sweep rerank failed, falling back to merged order', { error: error instanceof Error ? error.message : String(error) });
+            return merged.slice(0, finalTopN);
+        }
+    }
+```
+
+**(c) Удалить приватный `retrieveSemantic`** (переехал в `SemanticRetrievalChannel`). `rerankNeighbors`, `warmupReranker`, `configure`, `isAmbiguous`/`looksBroken`-вызовы — **без изменений**.
+
+> Эквивалентность поведения: при списке `[semantic, graph, fuzzy]` цикл даёт ровно `S` (всегда, т.к. `codeOnly=false`, `isEnabled→true`) → `G` (если code && graph.enabled) → `F` (если code && fuzzy.enabled). Порядок в `lists` = порядок в старом коде → `mergeNeighborChannels` получает тот же вход → тот же выход.
+
+### B.6 DI: `src/node/smart-completions-backend-module.ts`
+
+Каналы биндятся к токену `RetrievalChannel` **в порядке** semantic → graph → fuzzy.
+
+```ts
+// Добавить импорты:
+import { RetrievalChannel } from './sweep/retrieval/retrieval-channel';
+import { SemanticRetrievalChannel } from './sweep/retrieval/channels/semantic-retrieval-channel';
+import { GraphRetrievalChannel } from './sweep/retrieval/channels/graph-retrieval-channel';
+import { FuzzyRetrievalChannel } from './sweep/retrieval/channels/fuzzy-retrieval-channel';
+
+// БЫЛО (строки 37–40):
+    bind(SweepFuzzyChannel).toSelf().inSingletonScope();
+    bind(SweepGraphIndexer).toSelf().inSingletonScope();
+    bind(SweepGraphChannel).toSelf().inSingletonScope();
+    bind(SweepRetrievalOrchestrator).toSelf().inSingletonScope();
+
+// СТАНЕТ (порядок toService = semantic, graph, fuzzy):
+    bind(SweepFuzzyChannel).toSelf().inSingletonScope();
+    bind(SweepGraphIndexer).toSelf().inSingletonScope();
+    bind(SweepGraphChannel).toSelf().inSingletonScope();
+
+    bind(SemanticRetrievalChannel).toSelf().inSingletonScope();
+    bind(RetrievalChannel).toService(SemanticRetrievalChannel);
+    bind(GraphRetrievalChannel).toSelf().inSingletonScope();
+    bind(RetrievalChannel).toService(GraphRetrievalChannel);
+    bind(FuzzyRetrievalChannel).toSelf().inSingletonScope();
+    bind(RetrievalChannel).toService(FuzzyRetrievalChannel);
+
+    bind(SweepRetrievalOrchestrator).toSelf().inSingletonScope();
+```
+
+> `EmbeddingIndexServiceImpl` уже забиндена `toSelf()` (строка 42) — `SemanticRetrievalChannel` её получит конструктором. `SweepGraphChannel`/`SweepFuzzyChannel` уже забиндены — адаптеры их получат.
+
+---
+
+## ЧАСТЬ C — Тесты
+
+Раннер прежний: `npm test`. Стиль повторяет `sweep-orchestrator.test.ts`/`sweep-merge.test.ts`. Все тесты — без серверов и без Theia (мокаем источники/каналы как простые объекты, реализующие интерфейс).
+
+### C.1 `test/sweep-related-composite.test.ts` — Composite источников + tie-break
+
+Главный гард: при равных score выживает кандидат из **более раннего** источника. Плюс изоляция ошибок.
+
+Так как `SweepContextCollector` завязан на Theia (`monaco`, `WorkspaceFiles`), тестируем **композитную логику отдельно**: маленький хелпер, повторяющий цикл коллектора над списком `RelatedSource`, → `dedupeRankRelated`. Чтобы не дублировать, выносим цикл в чистую функцию.
+
+**Рефактор-вынос (в `sweep-context-collector.ts`)** — чистая экспортируемая функция, которую зовёт и коллектор, и тест:
+
+```ts
+/** Чистый композит: обходит источники по порядку, изолирует ошибки, отдаёт плоский список кандидатов. */
+export async function collectRelatedCandidates(
+    sources: RelatedSource[],
+    ctx: RelatedSourceContext,
+    onError?: (id: string, error: unknown) => void,
+): Promise<RelatedCandidate[]> {
+    const out: RelatedCandidate[] = [];
+    for (const source of sources) {
+        try {
+            pushAll(out, await source.collect(ctx));
+        } catch (error) {
+            onError?.(source.id, error);
+        }
+    }
+    return out;
+}
+```
+Коллектор тогда зовёт `collectRelatedCandidates(this.relatedSources, sourceCtx, (id, e) => LOG.warn(...))` вместо инлайн-цикла (поведение идентично, но теперь юнит-тестируемо без Theia).
+
+**Тест:**
+
+```ts
+import assert from 'node:assert';
+import { test } from 'node:test';
+import { collectRelatedCandidates } from '../src/browser/sweep/data-gathering-layer/sweep-context-collector';
+import { dedupeRankRelated, RelatedCandidate } from '../src/common/sweep/related-files';
+import type { RelatedSource, RelatedSourceContext } from '../src/browser/sweep/data-gathering-layer/sources/related-source';
+
+const CTX: RelatedSourceContext = { languageId: 'typescript', uri: undefined as never, position: { line: 0, character: 0 }, currentRelPath: 'cur.ts', queries: [] };
+const src = (id: string, out: RelatedCandidate[]): RelatedSource => ({ id, collect: async () => out });
+
+test('composite preserves source order so equal-score tie-break favors earlier source', async () => {
+    // Один и тот же файл-фрагмент с равным score от двух источников; должен выжить экземпляр из первого.
+    const hierarchy = src('hierarchy', [{ filePath: 'a.ts', content: 'from-hierarchy', startLine: 1, endLine: 5, score: 1 }]);
+    const scm = src('scm', [{ filePath: 'a.ts', content: 'from-scm', startLine: 1, endLine: 5, score: 1 }]);
+    const candidates = await collectRelatedCandidates([hierarchy, scm], CTX);
+    const ranked = dedupeRankRelated(candidates, 5);
+    assert.equal(ranked.length, 1);
+    assert.equal(ranked[0].content, 'from-hierarchy');   // из первого источника
+});
+
+test('composite isolates a throwing source and keeps others', async () => {
+    const boom: RelatedSource = { id: 'boom', collect: async () => { throw new Error('x'); } };
+    const ok = src('ok', [{ filePath: 'b.ts', content: 'kept', startLine: 1, endLine: 3, score: 2 }]);
+    const seen: string[] = [];
+    const candidates = await collectRelatedCandidates([boom, ok], CTX, id => seen.push(id));
+    assert.deepEqual(seen, ['boom']);
+    assert.equal(candidates.length, 1);
+    assert.equal(candidates[0].content, 'kept');
+});
+
+test('composite concatenates in registration order', async () => {
+    const a = src('a', [{ filePath: 'x.ts', content: 'A', score: 1 }]);
+    const b = src('b', [{ filePath: 'y.ts', content: 'B', score: 1 }]);
+    const out = await collectRelatedCandidates([a, b], CTX);
+    assert.deepEqual(out.map(c => c.content), ['A', 'B']);
+});
+```
+
+### C.2 `test/sweep-channel-composite.test.ts` — Composite каналов + tie-break + гейты
+
+Тестируем `SweepRetrievalOrchestrator` с мок-каналами. Проверяем: semantic всегда; graph/fuzzy гейтятся `codeOnly`+`isEnabled`; порядок в merge = порядок каналов; прозовый режим = только semantic.
+
+```ts
+import assert from 'node:assert';
+import { test } from 'node:test';
+import { SweepRetrievalOrchestrator } from '../src/node/sweep/retrieval/sweep-retrieval-orchestrator';
+import type { RetrievalChannel } from '../src/node/sweep/retrieval/retrieval-channel';
+import type { Neighbor } from '../src/common/embedding-types';
+
+const N = (file: string, score = 1): Neighbor => ({ filePath: file, startLine: 1, endLine: 2, text: file, score });
+
+function channel(id: string, codeOnly: boolean, enabled: boolean, out: Neighbor[]): RetrievalChannel {
+    return { id, codeOnly, isEnabled: () => enabled, retrieve: () => out };
+}
+
+const RERANK_OFF = { rerank: { enabled: false, finalTopN: 10, candidatePoolN: 10 } as never, graph: { enabled: true }, fuzzy: { enabled: true } };
+const INPUT = (fileMode: 'code' | 'prose') => ({ query: 'q', fileMode, signals: {} as never, fuzzySymbols: ['s'], topN: 10 });
+
+test('semantic always runs; code mode includes graph and fuzzy in registration order', async () => {
+    const orch = new SweepRetrievalOrchestrator([
+        channel('semantic', false, true, [N('s.ts')]),
+        channel('graph', true, true, [N('g.ts')]),
+        channel('fuzzy', true, true, [N('f.ts')]),
+    ]);
+    const out = await orch.retrieve(INPUT('code'), RERANK_OFF);
+    assert.deepEqual(out.map(n => n.filePath), ['s.ts', 'g.ts', 'f.ts']);  // merge сохранил порядок каналов
+});
+
+test('prose mode runs only non-code-only channels (semantic)', async () => {
+    const orch = new SweepRetrievalOrchestrator([
+        channel('semantic', false, true, [N('s.ts')]),
+        channel('graph', true, true, [N('g.ts')]),
+        channel('fuzzy', true, true, [N('f.ts')]),
+    ]);
+    const out = await orch.retrieve(INPUT('prose'), RERANK_OFF);
+    assert.deepEqual(out.map(n => n.filePath), ['s.ts']);
+});
+
+test('disabled channel is skipped even in code mode', async () => {
+    const orch = new SweepRetrievalOrchestrator([
+        channel('semantic', false, true, [N('s.ts')]),
+        channel('graph', true, false, [N('g.ts')]),   // graph.enabled=false
+        channel('fuzzy', true, true, [N('f.ts')]),
+    ]);
+    const out = await orch.retrieve(INPUT('code'), RERANK_OFF);
+    assert.deepEqual(out.map(n => n.filePath), ['s.ts', 'f.ts']);
+});
+
+test('equal-RRF tie-break favors earlier channel', async () => {
+    // Один и тот же сосед (file:start:end) от semantic и graph → выживает один, скоры складываются;
+    // важно, что merge не падает и порядок детерминирован.
+    const dup = N('dup.ts');
+    const orch = new SweepRetrievalOrchestrator([
+        channel('semantic', false, true, [dup]),
+        channel('graph', true, true, [dup]),
+    ]);
+    const out = await orch.retrieve(INPUT('code'), RERANK_OFF);
+    assert.equal(out.length, 1);
+    assert.equal(out[0].filePath, 'dup.ts');
+});
+```
+
+### C.3 Обновить существующий `test/sweep-orchestrator.test.ts`
+
+Текущий тест строит оркестратор с тремя позиционными зависимостями (`embedding, graph, fuzzy`). После смены конструктора на `@multiInject(RetrievalChannel) channels` — переписать конструирование на массив мок-каналов (как в C.2). Семантику тестов сохранить: «graph/fuzzy только для code mode», rerank-ambiguity, finalTopN. Это механическая адаптация под новый конструктор, не новая логика.
+
+### C.4 Что тесты гарантируют
+
+- **Tie-break по порядку источников** (C.1) и **по порядку каналов** (C.2) — единственный реальный риск скоупа закрыт.
+- Изоляция ошибок источника сохранена (C.1).
+- Гейтинг `codeOnly`/`isEnabled` эквивалентен старым `if (fileMode==='code' && cfg.X.enabled)` (C.2).
+- merge/rerank/finalTopN не затронуты (C.2/C.3 проходят на прежней логике).
+
+---
+
+## ЧАСТЬ D — Проверка и приёмка
 
 ```bash
 cd smart-completions
-# 1. Не осталось ли Sweep-ссылок на output (ожидаем: только output-source.ts, output-filter.ts и NES)
-grep -rn "outputSnippets\|OutputSource" src/browser/sweep src/node/sweep src/common/sweep/types.ts
-#   → ничего, кроме (возможно) output-source.ts
+# 1. Сборка
+npx tsc -b            # допустим только pre-existing варнинг moduleResolution=node10
 
-# 2. Компиляция исходников
-npx tsc -b              # допустим только pre-existing варнинг moduleResolution=node10
-
-# 3. Тесты
+# 2. Тесты
 npx tsc -p test/tsconfig.json --ignoreDeprecations 6.0
 node --test lib-test/test/*.test.js
-#   → 0 fail; число тестов на 0–1 меньше (Sweep output-ассерт убран)
+#   → 0 fail; новые composite-тесты зелёные; обновлённый orchestrator-тест зелёный
+
+# 3. Существующие тесты каналов не изменились и проходят
+node --test lib-test/test/sweep-graph-*.test.js lib-test/test/sweep-fuzzy-channel.test.js lib-test/test/sweep-merge.test.js
 ```
 
-### Критерии приёмки Phase 1
+### Критерии приёмки
 
-- Sweep-промпт больше не содержит блоков `<|file_sep|>output/{channel}`.
-- `grep` по `src/browser/sweep`, `src/node/sweep`, `src/common/sweep/types.ts` не находит `outputSnippets`/`OutputSource` (кроме самого `output-source.ts`, который пока жив).
 - `tsc -b` без новых ошибок; `node --test` — 0 fail.
-- Ни один файл `src/*/nes-module/`, `src/node/services/nes-backend-service.ts`, `src/common/nes-types.ts` **не изменён**.
-- `OutputSource`/`output-filter.ts`/`SweepOutputSnippet` ещё существуют (orphaned), сборка зелёная.
+- **Порядок биндингов** `RelatedSource` = `hierarchy, search, scm`; `RetrievalChannel` = `semantic, graph, fuzzy`. (Проверяется tie-break тестами.)
+- `dedupeRankRelated`, `mergeNeighborChannels`, reranker, `dedupeContextFiles`, `trimSweepContext`, `buildSweepSections` — **не изменены** (`git diff` по ним пустой).
+- `SweepGraphChannel` / `SweepFuzzyChannel` / `EmbeddingIndexServiceImpl` — внутренности и сигнатуры `retrieve(...)` **не изменены**; их юнит-тесты не правились и проходят.
+- `SymbolSource`/outline-ветка коллектора — не изменена.
+- FIM/Zeta — не тронуты.
 
 ---
 
-## 4. Phase 2 — полная зачистка (опционально, трогает Zeta)
+## ЧАСТЬ E — Порядок внедрения (коммиты)
 
-Выполнять только при явном решении убрать output и из NES. После этого `output` исчезает из репозитория полностью.
+Делать маленькими шагами, каждый — зелёная сборка и тесты:
 
-### 4.1 Удалить файлы
-
-```bash
-rm src/browser/sweep/data-gathering-layer/sources/output-source.ts
-rm src/browser/nes-module/sources/output-source.ts        # шим
-rm src/common/sweep/output-filter.ts
-rm src/common/nes-context/output-filter.ts                # шим
-```
-
-### 4.2 `src/common/sweep/types.ts` — удалить интерфейс
-
-```ts
-// УДАЛИТЬ ЦЕЛИКОМ (вместе с doc-комментарием):
-export interface SweepOutputSnippet {
-    channel: string;
-    text: string;
-}
-```
-
-### 4.3 `src/common/nes-types.ts`
-
-```ts
-// УДАЛИТЬ интерфейс:
-export interface NesOutputSnippet {
-    channel: string;
-    text: string;
-}
-// И поле в NesRequest:
-    outputSnippets?: NesOutputSnippet[];   // ← УДАЛИТЬ
-```
-
-### 4.4 `src/node/nes-module/context-formation/builder.ts`
-
-Убрать: импорт `NesOutputSnippet` (строка 4), алиас `export type OutputSnippet = NesOutputSnippet;` (строка 13), поле `outputSnippets?` в input (строка 32), поле в trimmed-структуре (строка 132), `keptOutput`-цикл (строки 252–253…), render-цикл (строка 299). Зеркалит правки §2.2–2.3, но в NES-билдере.
-
-### 4.5 `src/node/services/nes-backend-service.ts`
-
-```ts
-// УДАЛИТЬ (строка 79):
-                outputSnippets: request.outputSnippets,
-```
-
-### 4.6 Тесты
-
-- `test/nes-context-sources.test.ts`: удалить импорт `extractRelevantOutput, DEFAULT_OUTPUT_FILTER` (строка 15) и три теста (строки 92, 110 + связанные ассерты).
-- `test/battlefield.integration.test.ts`: удалить setup `extractRelevantOutput`/`outputSnippets` (строки 280–281, импорт строка 16) и `outputSnippets,` из `buildNesPrompt`.
-- `test/nes-prompt.test.ts`: если в zeta-тесте есть output — убрать.
-
-### 4.7 Проверка Phase 2
-
-```bash
-grep -rn "outputSnippets\|OutputSource\|extractRelevantOutput\|OutputSnippet\|output-filter" src/ test/
-#   → пусто
-npx tsc -b
-npx tsc -p test/tsconfig.json --ignoreDeprecations 6.0 && node --test lib-test/test/*.test.js
-```
-
-### Критерии приёмки Phase 2
-
-- `grep` по `src/` и `test/` не находит ни `outputSnippets`, ни `OutputSource`, ни `extractRelevantOutput`, ни `output-filter`.
-- Удалены 4 файла (2 источника + 2 шима).
-- `tsc -b` и `node --test` зелёные.
+1. **Интерфейсы** (`related-source.ts`, `retrieval-channel.ts`) — только типы/токены. Сборка зелёная (ещё никем не используются).
+2. **Адаптеры каналов** (`semantic/graph/fuzzy-retrieval-channel.ts`) — новые файлы, ещё не забинженные.
+3. **Источники реализуют `RelatedSource`** (A.2–A.4) + DI (A.6). Коллектор пока по-старому, но источники уже годны.
+4. **Коллектор → композит** (A.5) + вынос `collectRelatedCandidates` + тест C.1.
+5. **Оркестратор → композит** (B.5) + DI каналов (B.6) + тест C.2 + адаптация C.3.
+6. **Финальная проверка** (Часть D), `git diff` по Transform/Layout пустой.
 
 ---
 
-## 5. Чек-лист «снизу вверх» (для коммита)
+## ЧАСТЬ F — Границы (явно не трогаем)
 
-**Phase 1 (один коммит):**
-
-1. [ ] `common/sweep/types.ts` — поле `SweepRequest.outputSnippets`
-2. [ ] `node/sweep/context-trimmer.ts` — импорт, 2 поля, цикл, лог, return
-3. [ ] `node/sweep/sweep-prompt-builder.ts` — render-цикл + лог (+ проверить `normalizeCrlf`)
-4. [ ] `node/sweep/sweep-backend-service.ts` — проброс
-5. [ ] `browser/sweep/sweep-context-collector.ts` — импорты, поле, inject, hasErrors-цикл, сбор, лог, return
-6. [ ] `browser/sweep/sweep-request-builder.ts` — присваивание + лог
-7. [ ] `browser/smart-completions-frontend-module.ts` — import + bind
-8. [ ] `test/nes-prompt.test.ts` — Sweep-тест outline/output
-9. [ ] `test/battlefield.integration.test.ts` — вызов `buildSweepPrompt`
-10. [ ] `tsc -b` + `node --test` зелёные
-
-**Phase 2 (отдельный коммит, по решению):** пункты 10–19 из §1 + проверки §4.7.
-
----
-
-## 6. Что НЕ затрагивается (границы)
-
-- Retrieval-ядро: `SweepRetrievalOrchestrator`, каналы S/G/F, `mergeNeighborChannels`, reranker — без изменений.
-- Embedding-индекс, LanceDB, BM25, CodeGraph, fuzzy — без изменений.
-- Остальные источники контекста: `HierarchyRelatedSource`, `SearchRelatedSource`, `ScmChangedFilesSource`, `SymbolSource` (outline), `WorkspaceFiles` — без изменений.
-- FIM-модуль — без изменений.
-- Phase 1 не трогает ни одного файла Zeta/NES-модуля.
+- `dedupeRankRelated` (внутренняя связка sort→dedup→cap) — без изменений; композит лишь формирует ему вход в том же порядке.
+- `mergeNeighborChannels`, reranker, `dedupeContextFiles`, `trimSweepContext` — без изменений.
+- `buildSweepSections` и порядок секций промпта, спина (триада) — без изменений.
+- `SweepGraphChannel`/`SweepFuzzyChannel`/`EmbeddingIndexServiceImpl` — оборачиваются, не модифицируются.
+- `SymbolSource` (outline) — не `RelatedSource`, без изменений.
+- FIM, Zeta, embedding-индекс, LanceDB — без изменений.
