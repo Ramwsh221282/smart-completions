@@ -1,16 +1,13 @@
 import { Neighbor } from '../../../common/embedding-types';
 import { DiagnosticDTO } from '../../../common/editor-dto';
 import { RecentEdit } from '../../../common/edit-history-types';
-import { NesEditVolume, NesRelatedFile, NesOutputSnippet } from '../../../common/nes-types';
+import { NesEditVolume, NesRelatedFile } from '../../../common/nes-types';
 import { NesModelId } from '../../../common/model-types';
 import { normalizeCrlf, splitLines } from '../../util/crlf';
 import { buildSweepPrompt as buildSweepPromptFromLayer } from '../../sweep/prompt-creating-layer/sweep-prompt-builder';
 
 /** Связанный файл (RAG-сосед или результат LSP/search), отдаётся нативным file-блоком. */
 export type RelatedFile = NesRelatedFile;
-
-/** Сниппет канала Output (build/test логи), отдаётся pseudo-file блоком. */
-export type OutputSnippet = NesOutputSnippet;
 
 export interface BuildNesPromptInput {
     modelId: NesModelId;
@@ -28,8 +25,6 @@ export interface BuildNesPromptInput {
     relatedFiles?: RelatedFile[];
     /** Компактная outline-карта текущего файла (Зона B). */
     outline?: string;
-    /** Сниппеты Output-каналов (Зона B), только когда ошибка ещё не в маркерах. */
-    outputSnippets?: OutputSnippet[];
     editVolume: NesEditVolume;
     /** Sweep: положить diagnostics pseudo-file. false — выключить. undefined — включено. */
     injectInlineDiagnostics?: boolean;
@@ -129,7 +124,6 @@ interface TrimmedNesContext {
     relatedFiles: RelatedFile[];
     diagnostics: DiagnosticDTO[];
     outline: string;
-    outputSnippets: OutputSnippet[];
     prefill: string;
     overflow: boolean;
 }
@@ -162,7 +156,7 @@ function isWarningSeverity(d: DiagnosticDTO): boolean {
 
 // Наполнение по приоритету (что НЕ режется — первым): обязательная триада
 // original/current/updated → diagnostics errors → свежие правки → RAG/связанные файлы →
-// diagnostics warnings → outline → output. Превышение бюджета режет в обратном порядке.
+// diagnostics warnings → outline. Превышение бюджета режет в обратном порядке.
 function trimNesContext(input: BuildNesPromptInput, maxTokens: number): TrimmedNesContext {
     const contextSize = input.contextSize && input.contextSize > 0 ? input.contextSize : DEFAULT_NES_CONTEXT_SIZE;
     const budget = nesCharBudget(contextSize, maxTokens);
@@ -248,18 +242,6 @@ function trimNesContext(input: BuildNesPromptInput, maxTokens: number): TrimmedN
         remaining -= outlineCandidate.length + 24;
     }
 
-    // 6) output (низший приоритет).
-    const keptOutput: OutputSnippet[] = [];
-    for (const snippet of input.outputSnippets ?? []) {
-        const cost = snippet.text.length + snippet.channel.length + 24;
-        if (cost <= remaining) {
-            keptOutput.push(snippet);
-            remaining -= cost;
-        } else {
-            break;
-        }
-    }
-
     return {
         windowText: clamped.text,
         originalWindowText: originalWindow,
@@ -269,13 +251,12 @@ function trimNesContext(input: BuildNesPromptInput, maxTokens: number): TrimmedN
         relatedFiles: keptRelated,
         diagnostics: keptDiagnostics,
         outline,
-        outputSnippets: keptOutput,
         prefill,
         overflow,
     };
 }
 
-// Sweep training-формат: нативные file-блоки контекста, pseudo-file для outline/diagnostics/output,
+// Sweep training-формат: нативные file-блоки контекста и pseudo-file для outline/diagnostics,
 // recent changes как {path}.diff, и обязательная триада original/current/updated в самом конце —
 // модель генерирует из updated/, поэтому он замыкает промпт.
 function buildSweepPrompt(input: BuildNesPromptInput, trimmed: TrimmedNesContext, maxTokens: number): BuiltNesPrompt {
@@ -295,9 +276,6 @@ function buildSweepPrompt(input: BuildNesPromptInput, trimmed: TrimmedNesContext
     }
     if (trimmed.diagnostics.length > 0) {
         sections.push(`<|file_sep|>diagnostics/${input.filePath}\n${formatDiagnosticsLines(trimmed.diagnostics)}`);
-    }
-    for (const snippet of trimmed.outputSnippets) {
-        sections.push(`<|file_sep|>output/${snippet.channel}\n${normalizeCrlf(snippet.text)}`);
     }
 
     // Зона C — сигнал правки (нативный diff).

@@ -7,9 +7,8 @@ import { buildRelatedFileQueries } from '../../../common/sweep/retrieval-queries
 import { dedupeRankRelated, RelatedCandidate } from '../../../common/sweep/related-files';
 import { formatOutline } from '../../../common/sweep/outline';
 import { SweepLogger } from '../../../common/sweep/logger';
-import { SweepOutputSnippet, SweepRelatedFile } from '../../../common/sweep/types';
+import { SweepRelatedFile } from '../../../common/sweep/types';
 import { HierarchyRelatedSource } from './sources/hierarchy-source';
-import { OutputSource } from './sources/output-source';
 import { ScmChangedFilesSource } from './sources/scm-source';
 import { SearchRelatedSource } from './sources/search-source';
 import { SymbolSource } from './sources/symbol-source';
@@ -35,7 +34,6 @@ export interface CollectSweepContextParams {
 export interface CollectedSweepContext {
     relatedFiles: SweepRelatedFile[];
     outline?: string;
-    outputSnippets: SweepOutputSnippet[];
 }
 
 /** Координирует все best-effort источники Sweep-контекста и изолирует ошибки отдельных источников от основного потока. */
@@ -43,8 +41,6 @@ export interface CollectedSweepContext {
 export class SweepContextCollector {
     // LSP / эвристика для построения outline псевдофайла в промпте.
     @inject(SymbolSource) protected readonly symbolSource!: SymbolSource;
-    // Theia Output каналы для построения output/ псевдофайла в промпте.
-    @inject(OutputSource) protected readonly outputSource!: OutputSource;
     // Поиск по воркспейсу для нахождения файлов с похожими символами.
     @inject(SearchRelatedSource) protected readonly searchSource!: SearchRelatedSource;
     // Call/type hierarchy LSP для нахождения файлов-вызывателей и типов-родителей.
@@ -56,7 +52,7 @@ export class SweepContextCollector {
 
     /**
      * Запускает все источники контекста параллельно, подавляет ошибки каждого источника через safe/safeAsync,
-     * дедуплицирует и ранжирует related-файлы, и пропускает output если есть активные ошибки компиляции.
+     * дедуплицирует и ранжирует related-файлы, чтобы сбой одного источника не ломал весь Sweep-цикл.
      */
     async collect(params: CollectSweepContextParams): Promise<CollectedSweepContext> {
         const uri = new URI(params.model.uri.toString());
@@ -90,15 +86,6 @@ export class SweepContextCollector {
         pushAll(relatedCandidates, fromSearch);
         pushAll(relatedCandidates, fromScm);
         const relatedFiles = dedupeRankRelated(relatedCandidates, params.relatedTopN);
-        let hasErrors = false;
-        for (let i = 0; i < params.diagnostics.length; i++) {
-            if (params.diagnostics[i].severity === 'error') {
-                hasErrors = true;
-                break;
-            }
-        }
-        // Output пропускается при наличии ошибок, чтобы не перегружать промпт нерелевантным шумом сборки.
-        const outputSnippets = hasErrors ? [] : this.safe(() => this.outputSource.collect(), [] as SweepOutputSnippet[], 'output');
 
         LOG.info('Sweep context collected', {
             currentRel,
@@ -109,10 +96,8 @@ export class SweepContextCollector {
             relatedFiles: relatedFiles.length,
             hasOutline: Boolean(outline),
             diagnostics: params.diagnostics.length,
-            outputSnippets: outputSnippets.length,
-            outputSkippedDueToErrors: hasErrors,
         });
-        return { relatedFiles, outline: outline || undefined, outputSnippets };
+        return { relatedFiles, outline: outline || undefined };
     }
 
     /**

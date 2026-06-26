@@ -14,7 +14,6 @@ import { SweepEditHistoryRecorder } from './sweep/data-gathering-layer/sweep-edi
 import { SweepContextCollector } from './sweep/data-gathering-layer/sweep-context-collector';
 import { SweepGraphLiveRecorder } from './sweep/data-gathering-layer/sweep-graph-live-recorder';
 import { HierarchyRelatedSource } from './sweep/data-gathering-layer/sources/hierarchy-source';
-import { OutputSource } from './sweep/data-gathering-layer/sources/output-source';
 import { ScmChangedFilesSource } from './sweep/data-gathering-layer/sources/scm-source';
 import { SearchRelatedSource } from './sweep/data-gathering-layer/sources/search-source';
 import { SymbolSource } from './sweep/data-gathering-layer/sources/symbol-source';
@@ -43,7 +42,6 @@ export default new ContainerModule(bind => {
 
     bind(WorkspaceFiles).toSelf().inSingletonScope();
     bind(SymbolSource).toSelf().inSingletonScope();
-    bind(OutputSource).toSelf().inSingletonScope();
     bind(SearchRelatedSource).toSelf().inSingletonScope();
     bind(HierarchyRelatedSource).toSelf().inSingletonScope();
     bind(ScmChangedFilesSource).toSelf().inSingletonScope();

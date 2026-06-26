@@ -306,7 +306,7 @@ test('sweep original reconstruction reverses the latest intersecting edit', () =
     assert.equal(reconstructed, 'const value = 1;');
 });
 
-test('sweep outline and output render as pseudo-files in zone B', () => {
+test('sweep outline renders as pseudo-file in zone B', () => {
     const built = buildSweepPrompt({
         modelId: 'sweep-default',
         filePath: 'src/a.ts',
@@ -315,10 +315,8 @@ test('sweep outline and output render as pseudo-files in zone B', () => {
         recentEdits,
         editVolume: 'medium',
         outline: 'class A [1:0-3:1]\n  m [2:2-2:9] <-- cursor',
-        outputSnippets: [{ channel: 'build', text: 'ERROR src/a.ts:1: boom' }],
     });
     assert.ok(built.prompt.includes('<|file_sep|>outline/src/a.ts\nclass A [1:0-3:1]'));
-    assert.ok(built.prompt.includes('<|file_sep|>output/build\nERROR src/a.ts:1: boom'));
 });
 
 test('zeta prompt uses fim sections and current region marker', () => {

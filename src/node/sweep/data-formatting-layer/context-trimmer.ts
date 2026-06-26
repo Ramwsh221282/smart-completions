@@ -5,7 +5,7 @@ import type { FileMode } from '../../../common/mode-types';
 import { SweepLogger } from '../../../common/sweep/logger';
 import type { SweepModelProfile } from '../../../common/sweep/profiles';
 import { getSweepProfile } from '../../../common/sweep/profiles';
-import { SweepEditVolume, SweepModelId, SweepOutputSnippet, SweepRelatedFile } from '../../../common/sweep/types';
+import { SweepEditVolume, SweepModelId, SweepRelatedFile } from '../../../common/sweep/types';
 import { normalizeCrlf } from '../../../common/text/crlf';
 import { lineIndexAtOffset } from '../../../common/text/line-index';
 import type { TokenCounter } from '../token-budget/token-counter';
@@ -38,7 +38,6 @@ export interface BuildSweepPromptInput {
     neighbors?: Neighbor[];
     relatedFiles?: SweepRelatedFile[];
     outline?: string;
-    outputSnippets?: SweepOutputSnippet[];
     editVolume: SweepEditVolume;
     injectInlineDiagnostics?: boolean;
     prefill?: string;
@@ -59,7 +58,6 @@ export interface TrimmedSweepContext {
     relatedFiles: SweepRelatedFile[];
     diagnostics: DiagnosticDTO[];
     outline: string;
-    outputSnippets: SweepOutputSnippet[];
     prefill: string;
     overflow: boolean;
     /** Сумма токенов оставленных кусков; нужна для telemetry-оценки promptTokens без повторной токенизации prompt. */
@@ -110,7 +108,7 @@ function isErrorSeverity(d: DiagnosticDTO): boolean {
 
 /**
  * Идентифицирует warning-диагностики чтобы их можно было добавить после errors и истории правок,
- * но перед outline и output которые имеют ещё меньший приоритет.
+ * но перед outline, который имеет ещё меньший приоритет.
  */
 function isWarningSeverity(d: DiagnosticDTO): boolean {
     return d.severity === 'warning';
@@ -118,7 +116,7 @@ function isWarningSeverity(d: DiagnosticDTO): boolean {
 
 /**
  * Обрезает весь Sweep-контекст в порядке приоритета не трогая обязательную триаду original/current/updated;
- * порядок: local errors → recent edits → RAG/related → distant errors → warnings → outline → output.
+ * порядок: local errors → recent edits → RAG/related → distant errors → warnings → outline.
  */
 export function trimSweepContext(input: BuildSweepPromptInput, maxTokens: number): TrimmedSweepContext {
     const profile = input.profile ?? getSweepProfile(input.modelId === 'sweep-small' ? '1.5b' : 'v2-7b');
@@ -250,20 +248,6 @@ export function trimSweepContext(input: BuildSweepPromptInput, maxTokens: number
         }
     }
 
-    const keptOutput: SweepOutputSnippet[] = [];
-    for (const snippet of input.outputSnippets ?? []) {
-        const cost = tokenCost(snippet.text, counter) + tokenCost(snippet.channel, counter) + 8;
-        if (cost <= remaining) {
-            keptOutput.push(snippet);
-            remaining -= cost;
-        } else {
-            if (process.env.NODE_ENV === 'development') {
-                LOG.debug('Sweep output snippet trimmed by budget', { channel: snippet.channel, cost, remaining });
-            }
-            break;
-        }
-    }
-
     LOG.info('Sweep context trimmed', {
         modelId: input.modelId,
         contextProfile: profile.id,
@@ -288,7 +272,6 @@ export function trimSweepContext(input: BuildSweepPromptInput, maxTokens: number
         relatedIn: input.relatedFiles?.length ?? 0,
         relatedOut: keptRelated.length,
         outlineChars: outline.length,
-        outputOut: keptOutput.length,
         prefillTokens: tokenCost(prefill, counter),
     });
 
@@ -302,7 +285,6 @@ export function trimSweepContext(input: BuildSweepPromptInput, maxTokens: number
         relatedFiles: keptRelated,
         diagnostics: keptDiagnostics,
         outline,
-        outputSnippets: keptOutput,
         prefill,
         overflow,
         consumedTokens: budget - remaining,

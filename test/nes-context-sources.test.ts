@@ -12,7 +12,6 @@ import {
     buildSweepRetrievalQuery as buildNesRetrievalQuery,
     buildRelatedFileQueries,
 } from '../src/common/sweep/retrieval-queries';
-import { extractRelevantOutput, DEFAULT_OUTPUT_FILTER } from '../src/common/sweep/output-filter';
 import {
     formatOutline,
     selectEnclosingRange,
@@ -87,28 +86,6 @@ test('buildRelatedFileQueries returns deduped non-empty signals', () => {
     assert.ok(queries.includes('fullName'));
     assert.ok(queries.includes('User'));
     assert.equal(new Set(queries).size, queries.length, 'no duplicates');
-});
-
-test('extractRelevantOutput keeps error blocks, file refs and frames; strips ansi/timestamps/secrets', () => {
-    const raw = [
-        '[12:00:01] starting build',
-        '\u001b[31mERROR\u001b[0m compile failed',
-        'src/user-service.ts:12:9 - type error',
-        '    at compile (build.ts:5:3)',
-        'token=supersecretvalue',
-        'info: done',
-    ].join('\n');
-    const out = extractRelevantOutput(raw, DEFAULT_OUTPUT_FILTER);
-    assert.ok(out.includes('ERROR compile failed'));
-    assert.ok(out.includes('src/user-service.ts:12:9'));
-    assert.ok(out.includes('at compile (build.ts:5:3)'));
-    assert.ok(!out.includes('\u001b['), 'ansi stripped');
-    assert.ok(!out.includes('12:00:01'), 'leading timestamp stripped');
-    assert.ok(!out.includes('supersecretvalue'), 'secret redacted');
-});
-
-test('extractRelevantOutput returns empty when nothing relevant', () => {
-    assert.equal(extractRelevantOutput('all good\nstill fine\n', DEFAULT_OUTPUT_FILTER), '');
 });
 
 const outline: OutlineSymbol[] = [{

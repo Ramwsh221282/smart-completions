@@ -13,7 +13,6 @@ import { LlamaFimClient } from '../src/node/fim-module/model-call/llama-fim-clie
 import { postprocessFimCompletion } from '../src/node/fim-module/model-call/postprocess';
 import { buildSweepRetrievalQuery } from '../src/common/sweep/retrieval-queries';
 import { extractCodeSymbolsHeuristic, formatOutline } from '../src/common/sweep/outline';
-import { extractRelevantOutput } from '../src/common/sweep/output-filter';
 import { LlamaSweepClient } from '../src/node/sweep/model-call-layer/llama-sweep-client';
 import { parseSweepCompletion } from '../src/node/sweep/model-call-layer/sweep-response-parser';
 import { buildSweepPrompt } from '../src/node/sweep/prompt-creating-layer/sweep-prompt-builder';
@@ -270,15 +269,6 @@ test(
                     filePath: 'types.ts',
                     content: 'export interface User {\n    id: string;\n    displayName: string;\n    email: string;\n}',
                 }];
-                const buildLog = [
-                    '[12:00:01] starting tsc',
-                    '\u001b[31msrc/user-service.ts:13:21 - error TS2339: Property fullName does not exist\u001b[0m',
-                    '    at Object.<anonymous> (build.ts:5:3)',
-                    'token=supersecretvalue',
-                    'info: done',
-                ].join('\n');
-                const outputSnippet = extractRelevantOutput(buildLog);
-                const outputSnippets = outputSnippet ? [{ channel: 'build', text: outputSnippet }] : [];
 
                 for (const mode of ['no_rag', 'with_rag'] as const) {
                     const neighbors: Neighbor[] = mode === 'with_rag'
@@ -305,7 +295,6 @@ test(
                             neighbors,
                             relatedFiles,
                             outline,
-                            outputSnippets,
                             editVolume: 'medium',
                             injectInlineDiagnostics: NES_INJECT_DIAG,
                             contextSize: NES_CTX,
@@ -322,7 +311,6 @@ test(
                             neighbors,
                             relatedFiles,
                             outline,
-                            outputSnippets,
                             editVolume: 'medium',
                             injectInlineDiagnostics: NES_INJECT_DIAG,
                             contextSize: NES_CTX,
@@ -344,10 +332,6 @@ test(
                         const triadIdx = prompt.prompt.indexOf('<|file_sep|>original/user-service.ts');
                         record(report, `NES ${mode}: outline pseudo-file present`, outlineIdx >= 0);
                         record(report, `NES ${mode}: related file block present`, prompt.prompt.includes('<|file_sep|>types.ts\nexport interface User'));
-                        record(report, `NES ${mode}: output pseudo-file present and sanitized`,
-                            prompt.prompt.includes('<|file_sep|>output/build') &&
-                            !prompt.prompt.includes('supersecretvalue') &&
-                            !prompt.prompt.includes(`${String.fromCharCode(27)}[`));
                         record(report, `NES ${mode}: zone B sits before the triad`, outlineIdx >= 0 && triadIdx >= 0 && outlineIdx < triadIdx);
                     }
                     const raw = await nesClient.complete({

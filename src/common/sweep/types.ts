@@ -95,15 +95,6 @@ export interface SweepRelatedFile {
 }
 
 /**
- * Отфильтрованный фрагмент Output-канала для вставки в `output/{channel}` псевдофайл Sweep-промпта;
- * channel используется как имя псевдофайла чтобы модель понимала источник вывода.
- */
-export interface SweepOutputSnippet {
-    channel: string;
-    text: string;
-}
-
-/**
  * Полный запрос фронтенда к бекенду для построения Sweep training-format промпта;
  * содержит всё что нужно бекенду: окно, курсор, история правок, контекст и метаданные файла.
  */
@@ -122,7 +113,6 @@ export interface SweepRequest {
     diagnostics?: DiagnosticDTO[];
     relatedFiles?: SweepRelatedFile[];
     outline?: string;
-    outputSnippets?: SweepOutputSnippet[];
 }
 
 /**

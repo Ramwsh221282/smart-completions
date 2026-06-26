@@ -101,7 +101,6 @@ export class SweepBackendService {
                 neighbors,
                 relatedFiles: request.relatedFiles,
                 outline: request.outline,
-                outputSnippets: request.outputSnippets,
                 editVolume: this.config.editVolume,
                 injectInlineDiagnostics: this.config.injectInlineDiagnostics,
                 contextSize: this.config.contextSize,

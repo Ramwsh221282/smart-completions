@@ -60,11 +60,6 @@ export interface NesRelatedFile {
     content: string;
 }
 
-export interface NesOutputSnippet {
-    channel: string;
-    text: string;
-}
-
 export interface NesRequest {
     requestId: string;
     uri: string;
@@ -87,8 +82,6 @@ export interface NesRequest {
     relatedFiles?: NesRelatedFile[];
     /** Компактная outline-карта текущего файла. */
     outline?: string;
-    /** Сниппеты Output-каналов (build/test логи). */
-    outputSnippets?: NesOutputSnippet[];
 }
 
 /** Ответ NES (backend → frontend) с правками, которые frontend показывает во View Zone. */

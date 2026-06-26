@@ -96,7 +96,6 @@ export class SweepRequestBuilder {
             diagnostics: snapshot.diagnostics,
             relatedFiles: collected.relatedFiles,
             outline: collected.outline,
-            outputSnippets: collected.outputSnippets,
         };
         LOG.info('Sweep backend request built', {
             requestId: request.requestId,
@@ -105,7 +104,6 @@ export class SweepRequestBuilder {
             recentEdits: request.recentEdits.length,
             relatedFiles: request.relatedFiles.length,
             hasOutline: Boolean(request.outline),
-            outputSnippets: request.outputSnippets.length,
         });
         return request;
     }

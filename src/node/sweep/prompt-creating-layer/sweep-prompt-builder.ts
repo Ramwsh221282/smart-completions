@@ -2,7 +2,6 @@ import { SweepLogger } from '../../../common/sweep/logger';
 import { getSweepProfile, sweepRequestModelName } from '../../../common/sweep/profiles';
 import { SweepEditVolume } from '../../../common/sweep/types';
 import { dedupeContextFiles } from '../../../common/sweep/dedup-context';
-import { normalizeCrlf } from '../../../common/text/crlf';
 import { trimSweepContext, BuildSweepPromptInput, TrimmedSweepContext, SWEEP_TEMPLATE_OVERHEAD_TOKENS } from '../data-formatting-layer/context-trimmer';
 import { formatSweepDiagnosticsLines } from '../data-formatting-layer/diagnostics-format';
 import { formatSweepDiffBlocks, unifiedDiffToOriginalUpdated } from '../data-formatting-layer/diff-blocks';
@@ -74,7 +73,6 @@ export function buildSweepPrompt(input: BuildSweepPromptInput): BuiltSweepPrompt
         recentEdits: trimmed.recentEdits.length,
         diagnostics: trimmed.diagnostics.length,
         hasOutline: Boolean(trimmed.outline),
-        outputSnippets: trimmed.outputSnippets.length,
         dedupDropped: deduped.dropped,
         promptTokens,
         tokenMode,
@@ -112,9 +110,6 @@ function buildSweepSections(input: BuildSweepPromptInput, trimmed: TrimmedSweepC
     }
     if (trimmed.diagnostics.length > 0) {
         sections.push(`<|file_sep|>diagnostics/${input.filePath}\n${formatSweepDiagnosticsLines(trimmed.diagnostics)}`);
-    }
-    for (const snippet of trimmed.outputSnippets) {
-        sections.push(`<|file_sep|>output/${snippet.channel}\n${normalizeCrlf(snippet.text)}`);
     }
 
     sections.push(...formatSweepDiffBlocks(trimmed.recentEdits));
