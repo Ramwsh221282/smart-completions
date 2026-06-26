@@ -12,7 +12,7 @@ test('llama FIM client sends raw completions request', async () => {
     try {
         const client = new LlamaFimClient();
         const text = await client.complete({
-            baseUrl: 'http://127.0.0.1:8010/v1/',
+            baseUrl: 'http://127.0.0.1:8020/v1/',
             model: 'model',
             prompt: '<fim>',
             stop: ['stop'],
@@ -46,7 +46,7 @@ test('llama FIM client retries one busy server response', async () => {
     try {
         const client = new LlamaFimClient();
         const text = await client.complete({
-            baseUrl: 'http://127.0.0.1:8010/v1',
+            baseUrl: 'http://127.0.0.1:8020/v1',
             model: 'model',
             prompt: '<fim>',
             stop: [],

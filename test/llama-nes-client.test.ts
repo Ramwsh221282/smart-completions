@@ -12,7 +12,7 @@ test('llama Sweep client sends raw completions request', async () => {
     try {
         const client = new LlamaSweepClient();
         const text = await client.complete({
-            baseUrl: 'http://127.0.0.1:8030/v1/',
+            baseUrl: 'http://127.0.0.1:8010/v1/',
             model: 'nes',
             prompt: 'prompt',
             stop: ['stop'],
@@ -48,7 +48,7 @@ test('llama Sweep client retries one busy server response', async () => {
     try {
         const client = new LlamaSweepClient();
         const text = await client.complete({
-            baseUrl: 'http://127.0.0.1:8030/v1',
+            baseUrl: 'http://127.0.0.1:8010/v1',
             model: 'nes',
             prompt: 'prompt',
             stop: [],

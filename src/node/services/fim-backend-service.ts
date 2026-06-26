@@ -13,7 +13,7 @@ import { EmbeddingIndexServiceImpl } from './embedding-index-service';
 
 const DEFAULT_FIM_CONFIG: FimConfig = {
     modelId: 'qwen2.5-coder',
-    llamaUrl: 'http://127.0.0.1:8010/v1',
+    llamaUrl: 'http://127.0.0.1:8020/v1',
     contextSize: 32768,
     debounceMs: 120,
     generationMode: 'multiline',

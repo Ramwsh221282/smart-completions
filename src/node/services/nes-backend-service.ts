@@ -20,7 +20,7 @@ const DEFAULT_SWEEP_PROFILE = getSweepProfile('v2-7b');
 
 const DEFAULT_NES_CONFIG: NesConfig = {
     modelId: 'sweep-default',
-    llamaUrl: 'http://127.0.0.1:8030/v1',
+    llamaUrl: 'http://127.0.0.1:8010/v1',
     contextSize: 16384,
     debounceMs: 500,
     editVolume: 'medium',

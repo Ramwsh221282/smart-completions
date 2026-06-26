@@ -33,7 +33,7 @@ export class SweepBackendService {
     // Конфиг с дефолтами; перезаписывается через configure() при изменении preferences на фронтенде.
     private config: SweepConfig = {
         modelId: 'sweep-default',
-        llamaUrl: 'http://127.0.0.1:8030/v1',
+        llamaUrl: 'http://127.0.0.1:8010/v1',
         contextSize: 16384,
         debounceMs: 500,
         editVolume: 'medium',

@@ -29,7 +29,7 @@ export const SMART_COMPLETIONS_PREFERENCE_SCHEMA: PreferenceSchema = {
         },
         'smart-completions.fim.llamaUrl': {
             type: 'string',
-            default: 'http://127.0.0.1:8010/v1',
+            default: 'http://127.0.0.1:8020/v1',
             description: 'llama.cpp base URL for FIM completions (include /v1 if required).',
         },
         'smart-completions.fim.contextSize': {
@@ -88,7 +88,7 @@ export const SMART_COMPLETIONS_PREFERENCE_SCHEMA: PreferenceSchema = {
         },
         'smart-completions.nes.llamaUrl': {
             type: 'string',
-            default: 'http://127.0.0.1:8030/v1',
+            default: 'http://127.0.0.1:8010/v1',
             description: 'llama.cpp base URL for NES completions (include /v1 if required).',
         },
         'smart-completions.nes.sweepSmallSize': {
@@ -226,7 +226,7 @@ export const SMART_COMPLETIONS_PREFERENCE_SCHEMA: PreferenceSchema = {
         },
         'smart-completions.embedding.llamaUrl': {
             type: 'string',
-            default: 'http://127.0.0.1:8020/v1',
+            default: 'http://127.0.0.1:8040/v1',
             description: 'llama.cpp base URL for embeddings (include /v1 if required).',
         },
         'smart-completions.embedding.vectorDb': {
@@ -282,7 +282,7 @@ export function readFimConfig(preferences: PreferenceService): FimConfig {
     const configuredContextSize = preferences.get<number>('smart-completions.fim.contextSize', 0);
     return {
         modelId,
-        llamaUrl: preferences.get<string>('smart-completions.fim.llamaUrl', 'http://127.0.0.1:8010/v1'),
+        llamaUrl: preferences.get<string>('smart-completions.fim.llamaUrl', 'http://127.0.0.1:8020/v1'),
         contextSize: configuredContextSize > 0 ? configuredContextSize : FIM_CONTEXT_MAX[modelId],
         debounceMs: preferences.get<number>('smart-completions.fim.debounceMs', 120),
         generationMode: preferences.get<GenerationMode>('smart-completions.fim.generationMode', 'multiline'),
@@ -308,7 +308,7 @@ export function readNesConfig(preferences: PreferenceService): NesConfig {
     );
     return {
         modelId,
-        llamaUrl: preferences.get<string>('smart-completions.nes.llamaUrl', 'http://127.0.0.1:8030/v1'),
+        llamaUrl: preferences.get<string>('smart-completions.nes.llamaUrl', 'http://127.0.0.1:8010/v1'),
         contextSize: preferences.get<number>('smart-completions.nes.contextSize', 16384),
         debounceMs: preferences.get<number>('smart-completions.nes.debounceMs', 500),
         editVolume: preferences.get<'small' | 'medium' | 'large'>('smart-completions.nes.editVolume', 'medium'),
@@ -349,7 +349,7 @@ export function readNesConfig(preferences: PreferenceService): NesConfig {
 export function readEmbeddingConfig(preferences: PreferenceService): EmbeddingConfig {
     return {
         embedModel: preferences.get<EmbedModelId>('smart-completions.embedding.embedModel', 'nomic'),
-        llamaUrl: preferences.get<string>('smart-completions.embedding.llamaUrl', 'http://127.0.0.1:8020/v1'),
+        llamaUrl: preferences.get<string>('smart-completions.embedding.llamaUrl', 'http://127.0.0.1:8040/v1'),
         vectorDb: preferences.get<VectorDbId>('smart-completions.embedding.vectorDb', 'lancedb'),
         chromaUrl: preferences.get<string>('smart-completions.embedding.chromaUrl', 'http://127.0.0.1:8000'),
         indexOnSave: preferences.get<boolean>('smart-completions.embedding.indexOnSave', true),
