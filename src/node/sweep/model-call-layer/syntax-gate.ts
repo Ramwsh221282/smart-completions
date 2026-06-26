@@ -1,5 +1,10 @@
 import Parser from 'web-tree-sitter';
+import { LRUCache } from 'lru-cache';
 import { grammarForLanguage } from '../../embedding-module/chunker/language-registry';
+import { md5 } from '../../util/hash';
+
+/** Размер syntax cache ограничивает память и сохраняет повторяющиеся окна между predict-вызовами. */
+const SYNTAX_ERROR_CACHE_MAX = 512;
 
 /** Loader web-tree-sitter 0.20.x доступен на Parser.Language только после Parser.init(). */
 type LanguageLoader = { load(input: string): Promise<unknown> };
@@ -8,6 +13,7 @@ type LanguageLoader = { load(input: string): Promise<unknown> };
 export class SweepSyntaxGate {
     private parser: Parser | undefined;
     private readonly languages = new Map<string, unknown>();
+    private readonly errorCache = new LRUCache<string, number>({ max: SYNTAX_ERROR_CACHE_MAX });
     private initialized = false;
     private failed = false;
 
@@ -25,7 +31,7 @@ export class SweepSyntaxGate {
             }
             const language = await this.loadLanguage(grammar);
             parser.setLanguage(language as Parameters<Parser['setLanguage']>[0]);
-            return this.errorCount(parser, newWindow) - this.errorCount(parser, oldWindow);
+            return this.errorCount(parser, grammar, newWindow) - this.errorCount(parser, grammar, oldWindow);
         } catch {
             this.failed = true;
             return undefined;
@@ -54,8 +60,20 @@ export class SweepSyntaxGate {
         return language;
     }
 
+    /** Возвращает cached или вычисленное число ERROR/MISSING узлов для окна кода. */
+    private errorCount(parser: Parser, grammar: string, source: string): number {
+        const key = `${grammar}:${md5(source)}`;
+        const cached = this.errorCache.get(key);
+        if (cached !== undefined) {
+            return cached;
+        }
+        const counted = this.computeErrorCount(parser, source);
+        this.errorCache.set(key, counted);
+        return counted;
+    }
+
     /** Обходит tree-sitter дерево без рекурсии и считает ERROR/MISSING узлы для regression-сравнения. */
-    private errorCount(parser: Parser, source: string): number {
+    private computeErrorCount(parser: Parser, source: string): number {
         const tree = parser.parse(source);
         try {
             const cursor = tree.walk();

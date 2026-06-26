@@ -36,6 +36,7 @@
     "apache-arrow": "18.1.0",
     "chromadb": "3.4.3",
     "ignore": "7.0.5",
+    "lru-cache": "^11.0.0",
     "tree-sitter-wasms": "0.1.13",
     "web-tree-sitter": "0.20.8"
   },

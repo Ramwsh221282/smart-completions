@@ -1,9 +1,9 @@
-import * as path from 'path';
-import { fileURLToPath } from 'url';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { injectable, inject } from '@theia/core/shared/inversify';
 import { CancellationToken, Disposable } from '@theia/core/lib/common';
 import { NesBackendService } from '../../common/protocol';
-import { NesConfig, NesRequest, NesResponse } from '../../common/nes-types';
+import { DEFAULT_DIAGNOSTICS_GATE_CONFIG, NesConfig, NesRequest, NesResponse } from '../../common/nes-types';
 import { RecentEdit } from '../../common/edit-history-types';
 import type { TextEditDTO } from '../../common/editor-dto';
 import { buildNesPrompt } from '../nes-module/context-formation/builder';
@@ -12,7 +12,7 @@ import { LlamaNesClient } from '../nes-module/model-call/llama-nes-client';
 import { parseNesCompletion } from '../nes-module/model-call/response-parser';
 import { normalizeCrlf } from '../util/crlf';
 import { getSweepProfile, sweepRequestModelName } from '../../common/sweep/profiles';
-import { SweepConfig, SweepRequest } from '../../common/sweep/types';
+import { DEFAULT_SWEEP_RERANK_CONFIG, SweepConfig, SweepRequest } from '../../common/sweep/types';
 import { SweepBackendService } from '../sweep/sweep-backend-service';
 import { EmbeddingIndexServiceImpl } from './embedding-index-service';
 
@@ -29,6 +29,8 @@ const DEFAULT_NES_CONFIG: NesConfig = {
     queryMaxChars: 400,
     profile: DEFAULT_SWEEP_PROFILE,
     requestModelName: sweepRequestModelName(DEFAULT_SWEEP_PROFILE.id, ''),
+    rerank: DEFAULT_SWEEP_RERANK_CONFIG,
+    diagnosticsGate: DEFAULT_DIAGNOSTICS_GATE_CONFIG,
 };
 
 @injectable()

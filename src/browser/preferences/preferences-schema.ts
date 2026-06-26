@@ -2,9 +2,10 @@ import { PreferenceSchema } from '@theia/core/lib/common/preferences/preference-
 import { PreferenceService } from '@theia/core/lib/common/preferences/preference-service';
 import { EmbeddingConfig } from '../../common/embedding-types';
 import { FimConfig } from '../../common/fim-types';
-import { NesConfig } from '../../common/nes-types';
+import { DEFAULT_DIAGNOSTICS_GATE_CONFIG, NesConfig } from '../../common/nes-types';
 import { EmbedModelId, FimModelId, GenerationMode, NesModelId, VectorDbId } from '../../common/model-types';
 import { SweepProfileId, getSweepProfile, sweepProfileIdForModel, sweepRequestModelName } from '../../common/sweep/profiles';
+import { DEFAULT_SWEEP_RERANK_CONFIG } from '../../common/sweep/types';
 
 /** Схема настроек smart-completions для FIM/NES, coordination mode и embedding-инфраструктуры. */
 export const SMART_COMPLETIONS_PREFERENCE_SCHEMA: PreferenceSchema = {
@@ -137,6 +138,77 @@ export const SMART_COMPLETIONS_PREFERENCE_SCHEMA: PreferenceSchema = {
             default: 400,
             description: 'Character budget for NES retrieval / related-file queries built from the edit signal.',
         },
+        'smart-completions.nes.rerank.enabled': {
+            type: 'boolean',
+            default: false,
+            description: 'Enable Sweep retrieval reranking through llama.cpp /rerank.',
+        },
+        'smart-completions.nes.rerank.llamaUrl': {
+            type: 'string',
+            default: 'http://127.0.0.1:8040/v1',
+            description: 'llama.cpp base URL for the Qwen3 reranker server.',
+        },
+        'smart-completions.nes.rerank.model': {
+            type: 'string',
+            default: 'qwen3-reranker-0.6b',
+            description: 'Model alias sent to llama.cpp /rerank.',
+        },
+        'smart-completions.nes.rerank.instruction': {
+            type: 'string',
+            default: DEFAULT_SWEEP_RERANK_CONFIG.instruction,
+            description: 'Qwen3 reranker instruction prepended to the edit-signal query.',
+        },
+        'smart-completions.nes.rerank.candidatePoolN': {
+            type: 'number',
+            default: 24,
+            description: 'How many Sweep RAG candidates to retrieve before optional reranking.',
+        },
+        'smart-completions.nes.rerank.rerankTopN': {
+            type: 'number',
+            default: 16,
+            description: 'How many top RRF candidates to send to llama.cpp /rerank.',
+        },
+        'smart-completions.nes.rerank.finalTopN': {
+            type: 'number',
+            default: 8,
+            description: 'Maximum number of reranked neighbors allowed into the Sweep prompt.',
+        },
+        'smart-completions.nes.rerank.ambiguityMargin': {
+            type: 'number',
+            default: 0.002,
+            description: 'RRF score margin below which the retrieval top is considered ambiguous.',
+        },
+        'smart-completions.nes.rerank.timeoutMs': {
+            type: 'number',
+            default: 1500,
+            description: 'Hot-path timeout for llama.cpp /rerank before fail-open fallback.',
+        },
+        'smart-completions.nes.rerank.maxDocChars': {
+            type: 'number',
+            default: 2000,
+            description: 'Maximum characters per candidate document sent to the reranker.',
+        },
+        'smart-completions.nes.diagnosticsGate.enabled': {
+            type: 'boolean',
+            default: false,
+            description: 'Verify accepted Sweep edits against post-apply diagnostic deltas.',
+        },
+        'smart-completions.nes.diagnosticsGate.mode': {
+            type: 'string',
+            enum: ['warn', 'revert'],
+            default: 'warn',
+            description: 'How to react when an accepted NES edit increases error diagnostics.',
+        },
+        'smart-completions.nes.diagnosticsGate.settleTimeoutMs': {
+            type: 'number',
+            default: 800,
+            description: 'Maximum wait for Monaco marker updates after accepting a NES edit.',
+        },
+        'smart-completions.nes.diagnosticsGate.settleMs': {
+            type: 'number',
+            default: 150,
+            description: 'Quiet period that marks diagnostics as settled after marker changes.',
+        },
         'smart-completions.embedding.embedModel': {
             type: 'string',
             default: 'nomic',
@@ -236,6 +308,24 @@ export function readNesConfig(preferences: PreferenceService): NesConfig {
         queryMaxChars: preferences.get<number>('smart-completions.nes.queryMaxChars', 400),
         profile,
         requestModelName,
+        rerank: {
+            enabled: preferences.get<boolean>('smart-completions.nes.rerank.enabled', DEFAULT_SWEEP_RERANK_CONFIG.enabled),
+            llamaUrl: preferences.get<string>('smart-completions.nes.rerank.llamaUrl', DEFAULT_SWEEP_RERANK_CONFIG.llamaUrl),
+            model: preferences.get<string>('smart-completions.nes.rerank.model', DEFAULT_SWEEP_RERANK_CONFIG.model),
+            instruction: preferences.get<string>('smart-completions.nes.rerank.instruction', DEFAULT_SWEEP_RERANK_CONFIG.instruction),
+            candidatePoolN: preferences.get<number>('smart-completions.nes.rerank.candidatePoolN', DEFAULT_SWEEP_RERANK_CONFIG.candidatePoolN),
+            rerankTopN: preferences.get<number>('smart-completions.nes.rerank.rerankTopN', DEFAULT_SWEEP_RERANK_CONFIG.rerankTopN),
+            finalTopN: preferences.get<number>('smart-completions.nes.rerank.finalTopN', DEFAULT_SWEEP_RERANK_CONFIG.finalTopN),
+            ambiguityMargin: preferences.get<number>('smart-completions.nes.rerank.ambiguityMargin', DEFAULT_SWEEP_RERANK_CONFIG.ambiguityMargin),
+            timeoutMs: preferences.get<number>('smart-completions.nes.rerank.timeoutMs', DEFAULT_SWEEP_RERANK_CONFIG.timeoutMs),
+            maxDocChars: preferences.get<number>('smart-completions.nes.rerank.maxDocChars', DEFAULT_SWEEP_RERANK_CONFIG.maxDocChars),
+        },
+        diagnosticsGate: {
+            enabled: preferences.get<boolean>('smart-completions.nes.diagnosticsGate.enabled', DEFAULT_DIAGNOSTICS_GATE_CONFIG.enabled),
+            mode: preferences.get<'warn' | 'revert'>('smart-completions.nes.diagnosticsGate.mode', DEFAULT_DIAGNOSTICS_GATE_CONFIG.mode),
+            settleTimeoutMs: preferences.get<number>('smart-completions.nes.diagnosticsGate.settleTimeoutMs', DEFAULT_DIAGNOSTICS_GATE_CONFIG.settleTimeoutMs),
+            settleMs: preferences.get<number>('smart-completions.nes.diagnosticsGate.settleMs', DEFAULT_DIAGNOSTICS_GATE_CONFIG.settleMs),
+        },
     };
 }
 

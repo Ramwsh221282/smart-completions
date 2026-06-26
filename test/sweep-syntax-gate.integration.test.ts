@@ -19,3 +19,19 @@ test('SweepSyntaxGate bypasses unsupported languages', async () => {
     const delta = await gate.errorDelta('plain text', 'plain text !', 'plaintext');
     assert.equal(delta, undefined);
 });
+
+/** Проверяет, что повторный identical syntax-gate вызов переиспользует cached error counts. */
+test('SweepSyntaxGate caches repeated parser error counts', async t => {
+    const gate = new SweepSyntaxGate();
+    const first = await gate.errorDelta('const value = 1;\n', 'const value = ;\n', 'typescript');
+    if (first === undefined) {
+        t.skip('tree-sitter TypeScript grammar is unavailable');
+        return;
+    }
+    const cacheOwner = gate as unknown as { errorCache: { size: number } };
+    const sizeAfterFirst = cacheOwner.errorCache.size;
+    const second = await gate.errorDelta('const value = 1;\n', 'const value = ;\n', 'typescript');
+
+    assert.equal(second, first);
+    assert.equal(cacheOwner.errorCache.size, sizeAfterFirst);
+});

@@ -2,10 +2,28 @@ import { FileMode } from './mode-types';
 import { RecentEdit } from './edit-history-types';
 import { DiagnosticDTO, RangeDTO, PositionDTO, TextEditDTO } from './editor-dto';
 import { NesModelId } from './model-types';
+import type { SweepRerankConfig } from './sweep/types';
 import type { SweepModelProfile } from './sweep/profiles';
 
 /** Объём предлагаемой правки/диффа (не «длина генерации»). */
 export type NesEditVolume = 'small' | 'medium' | 'large';
+
+export type DiagnosticsGateMode = 'warn' | 'revert';
+
+export interface DiagnosticsGateConfig {
+    enabled: boolean;
+    mode: DiagnosticsGateMode;
+    settleTimeoutMs: number;
+    settleMs: number;
+}
+
+/** Default diagnostics gate config keeps semantic verification opt-in and fail-open. */
+export const DEFAULT_DIAGNOSTICS_GATE_CONFIG: DiagnosticsGateConfig = {
+    enabled: false,
+    mode: 'warn',
+    settleTimeoutMs: 800,
+    settleMs: 150,
+};
 
 /** Настройки активной NES-модели (push'ом через configure()). */
 export interface NesConfig {
@@ -27,6 +45,8 @@ export interface NesConfig {
     profile: SweepModelProfile;
     /** Exact llama.cpp model field; free string to match the running server. */
     requestModelName: string;
+    rerank: SweepRerankConfig;
+    diagnosticsGate: DiagnosticsGateConfig;
 }
 
 /**

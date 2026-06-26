@@ -1,8 +1,16 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { LRUCache } from 'lru-cache';
+import { md5 } from '../../util/hash';
 
 // Локальный Qwen2.5-Coder tokenizer поставляется с плагином, чтобы token-aware budget работал offline.
 const DEFAULT_QWEN_TOKENIZER = 'qwen2.5-coder';
+
+/** Минимальная длина текста, при которой md5-ключ дешевле повторной токенизации. */
+const TOKEN_COUNT_CACHE_MIN_CHARS = 200;
+
+/** Token-count cache переживает predict-вызовы внутри backend singleton. */
+const TOKEN_COUNT_CACHE_MAX = 2048;
 
 /**
  * Интерфейс синхронного счётчика токенов; разделяет загрузку (async ensureReady)
@@ -48,6 +56,7 @@ export class QwenTokenCounter implements TokenCounter {
     private ready: Promise<void> | null = null;
     // Флаг fallback выставляется при любом сбое загрузки; после этого count всегда использует char-оценку.
     private fallback = false;
+    private readonly countCache = new LRUCache<string, number>({ max: TOKEN_COUNT_CACHE_MAX });
 
     constructor(private readonly model = process.env.SC_QWEN_TOKENIZER || DEFAULT_QWEN_TOKENIZER) {}
 
@@ -79,6 +88,21 @@ export class QwenTokenCounter implements TokenCounter {
         if (this.tokenizer === null) {
             return charTokenEstimate(text);
         }
+        if (text.length < TOKEN_COUNT_CACHE_MIN_CHARS) {
+            return this.rawCount(text);
+        }
+        const key = md5(text);
+        const cached = this.countCache.get(key);
+        if (cached !== undefined) {
+            return cached;
+        }
+        const counted = this.rawCount(text);
+        this.countCache.set(key, counted);
+        return counted;
+    }
+
+    /** Выполняет фактический tokenizer encode с безопасной деградацией в char estimate. */
+    private rawCount(text: string): number {
         try {
             const encoded = encodeWithTokenizer(this.tokenizer, text);
             return encoded >= 0 ? encoded : charTokenEstimate(text);

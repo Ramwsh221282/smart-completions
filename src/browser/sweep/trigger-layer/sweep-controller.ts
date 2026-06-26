@@ -7,11 +7,13 @@ import { CoordinationMode } from '../../../common/model-types';
 import { NesConfig } from '../../../common/nes-types';
 import { NesBackendService } from '../../../common/protocol';
 import { SweepLogger } from '../../../common/sweep/logger';
-import { NesViewZoneRenderer } from '../../nes-render/nes-view-zone-renderer';
+import { NesAcceptHookContext, NesViewZoneRenderer } from '../../nes-render/nes-view-zone-renderer';
 import { readNesConfig } from '../../preferences/preferences-schema';
+import { fileModeForLanguage } from '../../shared/file-mode';
 import { SweepContextCollector } from '../data-gathering-layer/sweep-context-collector';
 import { SweepEditHistoryRecorder } from '../data-gathering-layer/sweep-edit-history-recorder';
 import { SweepRequestBuilder } from '../data-formatting-layer/sweep-request-builder';
+import { DiagnosticsDeltaSnapshot, DiagnosticsDeltaVerifier } from '../quality/diagnostics-delta-verifier';
 
 // Логгер триггерного слоя Sweep на фронтенде.
 const LOG = new SweepLogger('browser:trigger');
@@ -29,6 +31,7 @@ export class SweepController implements FrontendApplicationContribution, Disposa
     @inject(NesViewZoneRenderer) private readonly renderer!: NesViewZoneRenderer;
     // Сборщик контекста из Theia-источников (LSP, SCM, output и др.).
     @inject(SweepContextCollector) private readonly collector!: SweepContextCollector;
+    @inject(DiagnosticsDeltaVerifier) private readonly diagnosticsVerifier!: DiagnosticsDeltaVerifier;
 
     // Корневой DisposableCollection для подписок уровня приложения.
     private readonly toDispose = new DisposableCollection();
@@ -56,6 +59,10 @@ export class SweepController implements FrontendApplicationContribution, Disposa
      */
     async onStart(): Promise<void> {
         await this.pushConfig();
+        this.renderer.setAcceptHook({
+            beforeAccept: context => this.beforeNesAccept(context),
+            afterAccept: (context, state, acceptedVersion) => this.afterNesAccept(context, state, acceptedVersion),
+        });
         for (const editor of monaco.editor.getEditors()) {
             this.trackEditor(editor);
         }
@@ -93,9 +100,27 @@ export class SweepController implements FrontendApplicationContribution, Disposa
         if (this.timer) {
             clearTimeout(this.timer);
         }
+        this.renderer.setAcceptHook(undefined);
         this.renderer.dismiss();
         this.toDispose.dispose();
         LOG.info('Sweep controller disposed');
+    }
+
+    /** Снимает diagnostics snapshot перед единственным renderer.accept chokepoint. */
+    private beforeNesAccept(context: NesAcceptHookContext): DiagnosticsDeltaSnapshot | undefined {
+        const gate = this.config.diagnosticsGate;
+        if (!gate.enabled || fileModeForLanguage(context.model.getLanguageId()) !== 'code' || context.edits.length !== 1) {
+            return undefined;
+        }
+        return this.diagnosticsVerifier.snapshotBefore(context.model, context.edits[0]);
+    }
+
+    /** Запускает post-apply diagnostics verifier после реального executeEdits без блокировки UI. */
+    private afterNesAccept(context: NesAcceptHookContext, state: unknown, acceptedVersion: number): void {
+        if (!isDiagnosticsDeltaSnapshot(state) || !this.config.diagnosticsGate.enabled) {
+            return;
+        }
+        void this.diagnosticsVerifier.verify(context.editor, state, acceptedVersion, this.config.diagnosticsGate);
     }
 
     /**
@@ -226,4 +251,15 @@ export class SweepController implements FrontendApplicationContribution, Disposa
             LOG.warn('Sweep controller failed to push config', { error: error instanceof Error ? error.message : String(error) });
         }
     }
+}
+
+/** Type guard для hook state, чтобы renderer оставался независимым от Sweep verifier. */
+function isDiagnosticsDeltaSnapshot(value: unknown): value is DiagnosticsDeltaSnapshot {
+    return typeof value === 'object'
+        && value !== null
+        && typeof (value as { uri?: unknown }).uri === 'string'
+        && typeof (value as { beforeErrors?: unknown }).beforeErrors === 'number'
+        && typeof (value as { beforeVersion?: unknown }).beforeVersion === 'number'
+        && typeof (value as { inverseEdit?: unknown }).inverseEdit === 'object'
+        && (value as { inverseEdit?: unknown }).inverseEdit !== null;
 }

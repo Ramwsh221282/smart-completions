@@ -10,6 +10,36 @@ export type SweepModelId = Extract<NesModelId, 'sweep-default' | 'sweep-small'>;
 // Контролирует размер генерации; влияет на maxTokens и задаётся пользователем в настройках на модель.
 export type SweepEditVolume = 'small' | 'medium' | 'large';
 
+/** Default Qwen3-Reranker instruction for next-edit retrieval ranking. */
+export const DEFAULT_SWEEP_RERANK_INSTRUCTION = "Instruct: Given the current code edit and cursor context, judge whether the code snippet is useful for predicting the developer's next edit. Prefer snippets that define or call the symbols being edited.";
+
+/** Default Sweep rerank config keeps the second-stage ranking opt-in and latency-bounded. */
+export const DEFAULT_SWEEP_RERANK_CONFIG: SweepRerankConfig = {
+    enabled: false,
+    llamaUrl: 'http://127.0.0.1:8040/v1',
+    model: 'qwen3-reranker-0.6b',
+    instruction: DEFAULT_SWEEP_RERANK_INSTRUCTION,
+    candidatePoolN: 24,
+    rerankTopN: 16,
+    finalTopN: 8,
+    ambiguityMargin: 0.002,
+    timeoutMs: 1500,
+    maxDocChars: 2000,
+};
+
+export interface SweepRerankConfig {
+    enabled: boolean;
+    llamaUrl: string;
+    model: string;
+    instruction: string;
+    candidatePoolN: number;
+    rerankTopN: number;
+    finalTopN: number;
+    ambiguityMargin: number;
+    timeoutMs: number;
+    maxDocChars: number;
+}
+
 /**
  * Конфигурация активной Sweep-модели; хранится в бекенде и обновляется через NES-фасад при изменении preferences.
  * Параметры model-specific потому что слоты контекста, inject-diagnostics и RAG различаются между sweep-default и sweep-small.
@@ -26,6 +56,7 @@ export interface SweepConfig {
     queryMaxChars: number;
     profile: SweepModelProfile;
     requestModelName: string;
+    rerank: SweepRerankConfig;
 }
 
 /**

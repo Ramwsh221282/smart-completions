@@ -3,6 +3,18 @@ import * as monaco from '@theia/monaco-editor-core';
 import { PositionDTO, TextEditDTO } from '../../common/editor-dto';
 import { NesResponse } from '../../common/nes-types';
 
+export interface NesAcceptHookContext {
+    editor: monaco.editor.ICodeEditor;
+    model: monaco.editor.ITextModel;
+    response: NesResponse;
+    edits: readonly TextEditDTO[];
+}
+
+export interface NesAcceptHook {
+    beforeAccept(context: NesAcceptHookContext): unknown;
+    afterAccept(context: NesAcceptHookContext, state: unknown, acceptedVersion: number): void;
+}
+
 /** Единственный рендерер NES-подсказок: не зависит от модели, используется всеми Sweep/Zeta-путями через SweepController. */
 @injectable()
 export class NesViewZoneRenderer {
@@ -12,6 +24,12 @@ export class NesViewZoneRenderer {
     private zoneId: string | undefined;
     // Последний NES-ответ; нужен для применения правки при accept и навигации при jumpOrAccept.
     private response: NesResponse | undefined;
+    private acceptHook: NesAcceptHook | undefined;
+
+    /** Регистрирует внешний accept hook; renderer остаётся model-agnostic. */
+    setAcceptHook(hook: NesAcceptHook | undefined): void {
+        this.acceptHook = hook;
+    }
 
     /**
      * Показывает View Zone с предпросмотром правки под первой строкой предлагаемого диапазона;
@@ -46,12 +64,19 @@ export class NesViewZoneRenderer {
         if (!editor || !response || response.edits.length === 0) {
             return;
         }
-        editor.executeEdits('smart-completions-nes', response.edits.map(toMonacoEdit));
+        const model = editor.getModel();
+        const context = model ? { editor, model, response, edits: response.edits } : undefined;
+        const hookState = context ? this.acceptHook?.beforeAccept(context) : undefined;
+        const applied = editor.executeEdits('smart-completions-nes', response.edits.map(toMonacoEdit));
+        const acceptedVersion = model?.getVersionId();
         if (response.jumpTo) {
             editor.setPosition(toMonacoPosition(response.jumpTo));
             editor.revealPositionInCenterIfOutsideViewport(toMonacoPosition(response.jumpTo));
         }
         this.clear();
+        if (context && applied && acceptedVersion !== undefined) {
+            this.acceptHook?.afterAccept(context, hookState, acceptedVersion);
+        }
     }
 
     /**

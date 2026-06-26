@@ -18,6 +18,7 @@ import { ScmChangedFilesSource } from './sweep/data-gathering-layer/sources/scm-
 import { SearchRelatedSource } from './sweep/data-gathering-layer/sources/search-source';
 import { SymbolSource } from './sweep/data-gathering-layer/sources/symbol-source';
 import { WorkspaceFiles } from './sweep/data-gathering-layer/sources/workspace-files';
+import { DiagnosticsDeltaVerifier } from './sweep/quality/diagnostics-delta-verifier';
 
 /**
  * Frontend DI-модуль smart-completions.
@@ -45,6 +46,7 @@ export default new ContainerModule(bind => {
     bind(SweepContextCollector).toSelf().inSingletonScope();
 
     bind(NesViewZoneRenderer).toSelf().inSingletonScope();
+    bind(DiagnosticsDeltaVerifier).toSelf().inSingletonScope();
     bind(NesController).toSelf().inSingletonScope();
     bind(FrontendApplicationContribution).toService(NesController);
 
