@@ -1,16 +1,15 @@
-import { inject, injectable } from '@theia/core/shared/inversify';
+import { inject, injectable, multiInject } from '@theia/core/shared/inversify';
 import URI from '@theia/core/lib/common/uri';
 import * as monaco from '@theia/monaco-editor-core';
 import { DiagnosticDTO } from '../../../common/editor-dto';
 import { RecentEdit } from '../../../common/edit-history-types';
 import { buildRelatedFileQueries } from '../../../common/sweep/retrieval-queries';
-import { dedupeRankRelated, RelatedCandidate } from '../../../common/sweep/related-files';
+import { dedupeRankRelated } from '../../../common/sweep/related-files';
 import { formatOutline } from '../../../common/sweep/outline';
 import { SweepLogger } from '../../../common/sweep/logger';
 import { SweepRelatedFile } from '../../../common/sweep/types';
-import { HierarchyRelatedSource } from './sources/hierarchy-source';
-import { ScmChangedFilesSource } from './sources/scm-source';
-import { SearchRelatedSource } from './sources/search-source';
+import { collectRelatedCandidates } from './related-source-composite';
+import { RelatedSource, RelatedSourceContext } from './sources/related-source';
 import { SymbolSource } from './sources/symbol-source';
 import { WorkspaceFiles } from './sources/workspace-files';
 
@@ -41,18 +40,14 @@ export interface CollectedSweepContext {
 export class SweepContextCollector {
     // LSP / эвристика для построения outline псевдофайла в промпте.
     @inject(SymbolSource) protected readonly symbolSource!: SymbolSource;
-    // Поиск по воркспейсу для нахождения файлов с похожими символами.
-    @inject(SearchRelatedSource) protected readonly searchSource!: SearchRelatedSource;
-    // Call/type hierarchy LSP для нахождения файлов-вызывателей и типов-родителей.
-    @inject(HierarchyRelatedSource) protected readonly hierarchySource!: HierarchyRelatedSource;
-    // SCM dirty-файлы как низкоприоритетный сигнал о co-changed зависимостях.
-    @inject(ScmChangedFilesSource) protected readonly scmSource!: ScmChangedFilesSource;
+    // Все related-источники инжектятся в порядке bind(...).toService(...); этот порядок участвует в tie-break.
+    @multiInject(RelatedSource) protected readonly relatedSources!: RelatedSource[];
     // Утилита для получения относительных путей и чтения окон файлов.
     @inject(WorkspaceFiles) protected readonly files!: WorkspaceFiles;
 
     /**
-     * Запускает все источники контекста параллельно, подавляет ошибки каждого источника через safe/safeAsync,
-     * дедуплицирует и ранжирует related-файлы, чтобы сбой одного источника не ломал весь Sweep-цикл.
+     * Собирает outline и related-кандидаты best-effort так, чтобы сбой одного источника
+     * не прерывал Sweep-цикл и не менял детерминированный порядок related-кандидатов.
      */
     async collect(params: CollectSweepContextParams): Promise<CollectedSweepContext> {
         const uri = new URI(params.model.uri.toString());
@@ -73,26 +68,25 @@ export class SweepContextCollector {
             maxChars: params.queryMaxChars,
         });
 
-        const fromHierarchy = await this.safeAsync(
-            () => this.hierarchySource.collect(params.languageId, uri, lspPosition, currentRel),
-            [] as RelatedCandidate[],
-            'hierarchy',
-        );
-        const fromSearch = await this.safeAsync(() => this.searchSource.collect(queries, currentRel), [] as RelatedCandidate[], 'search');
-        const fromScm = await this.safeAsync(() => this.scmSource.collect(currentRel), [] as RelatedCandidate[], 'scm');
-
-        const relatedCandidates: RelatedCandidate[] = [];
-        pushAll(relatedCandidates, fromHierarchy);
-        pushAll(relatedCandidates, fromSearch);
-        pushAll(relatedCandidates, fromScm);
+        const sourceCtx: RelatedSourceContext = {
+            languageId: params.languageId,
+            uri,
+            position: lspPosition,
+            currentRelPath: currentRel,
+            queries,
+        };
+        const perSource: Record<string, number> = {};
+        const relatedCandidates = await collectRelatedCandidates(this.relatedSources, sourceCtx, (id, error) => {
+            LOG.warn('Sweep async context source failed', { label: id, error: error instanceof Error ? error.message : String(error) });
+        }, (id, count) => {
+            perSource[id] = count;
+        });
         const relatedFiles = dedupeRankRelated(relatedCandidates, params.relatedTopN);
 
         LOG.info('Sweep context collected', {
             currentRel,
             queries: queries.length,
-            hierarchyCandidates: fromHierarchy.length,
-            searchCandidates: fromSearch.length,
-            scmCandidates: fromScm.length,
+            perSource,
             relatedFiles: relatedFiles.length,
             hasOutline: Boolean(outline),
             diagnostics: params.diagnostics.length,
@@ -124,11 +118,5 @@ export class SweepContextCollector {
             LOG.warn('Sweep async context source failed', { label, error: error instanceof Error ? error.message : String(error) });
             return fallback;
         }
-    }
-}
-
-function pushAll<T>(target: T[], source: T[]): void {
-    for (let i = 0; i < source.length; i++) {
-        target.push(source[i]);
     }
 }

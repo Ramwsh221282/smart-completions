@@ -1,12 +1,10 @@
-import { injectable } from '@theia/core/shared/inversify';
+import { injectable, multiInject } from '@theia/core/shared/inversify';
 import type { Neighbor } from '../../../common/embedding-types';
 import type { FileMode } from '../../../common/mode-types';
 import { SweepLogger } from '../../../common/sweep/logger';
 import type { GraphQuerySignals, SweepFuzzyConfig, SweepGraphConfig, SweepRerankConfig } from '../../../common/sweep/types';
-import { EmbeddingIndexServiceImpl } from '../../services/embedding-index-service';
-import { SweepFuzzyChannel } from './fuzzy/sweep-fuzzy-channel';
-import { SweepGraphChannel } from './graph/sweep-graph-channel';
 import { mergeNeighborChannels } from './merge';
+import { RetrievalChannel, RetrievalChannelInput } from './retrieval-channel';
 import { buildSweepRerankQuery, clipRerankDocument, isAmbiguous, looksBroken, SweepRerankerClient } from './rerank/sweep-reranker-client';
 
 /** Warmup timeout даёт холодному reranker server шанс загрузить модель вне hot path. */
@@ -35,19 +33,11 @@ export interface OrchestratorInput {
 export class SweepRetrievalOrchestrator {
     private readonly reranker = new SweepRerankerClient();
     private rerankerBroken = false;
-    private readonly embedding: EmbeddingIndexServiceImpl;
-    private readonly graph: SweepGraphChannel;
-    private readonly fuzzy: SweepFuzzyChannel;
+    private readonly channels: RetrievalChannel[];
 
-    /** Канал S остаётся существующим EmbeddingIndexServiceImpl; G/F инжектятся как Sweep-local services. */
-    constructor(
-        embedding: EmbeddingIndexServiceImpl,
-        graph: SweepGraphChannel,
-        fuzzy: SweepFuzzyChannel,
-    ) {
-        this.embedding = embedding;
-        this.graph = graph;
-        this.fuzzy = fuzzy;
+    /** Каналы инжектятся в порядке регистрации; этот порядок участвует в tie-break merge. */
+    constructor(@multiInject(RetrievalChannel) channels: RetrievalChannel[]) {
+        this.channels = channels;
     }
 
     /** Сбрасывает broken-state и прогревает reranker только при включённой rerank настройке. */
@@ -62,16 +52,24 @@ export class SweepRetrievalOrchestrator {
     async retrieve(input: OrchestratorInput, config: SweepRetrievalConfig): Promise<Neighbor[]> {
         const finalTopN = Math.max(1, Math.min(config.rerank.finalTopN, input.topN));
         const poolN = Math.max(finalTopN, config.rerank.candidatePoolN);
-        const channels: Neighbor[][] = [];
-        const semantic = await this.retrieveSemantic(input.query, poolN, input.signal);
-        channels.push(semantic);
-        if (input.fileMode === 'code' && config.graph.enabled) {
-            channels.push(this.graph.retrieve(input.signals, poolN));
+        const channelInput: RetrievalChannelInput = {
+            query: input.query,
+            signals: input.signals,
+            fuzzySymbols: input.fuzzySymbols,
+            signal: input.signal,
+        };
+        const lists: Neighbor[][] = [];
+        for (let i = 0; i < this.channels.length; i++) {
+            const channel = this.channels[i];
+            if (channel.codeOnly && input.fileMode !== 'code') {
+                continue;
+            }
+            if (!channel.isEnabled(config)) {
+                continue;
+            }
+            lists.push(await channel.retrieve(channelInput, poolN));
         }
-        if (input.fileMode === 'code' && config.fuzzy.enabled) {
-            channels.push(this.fuzzy.retrieve(input.fuzzySymbols, poolN));
-        }
-        const merged = mergeNeighborChannels(channels, poolN);
+        const merged = mergeNeighborChannels(lists, poolN);
         if (!config.rerank.enabled || this.rerankerBroken || !isAmbiguous(merged, config.rerank.ambiguityMargin, finalTopN)) {
             return merged.slice(0, finalTopN);
         }
@@ -81,18 +79,6 @@ export class SweepRetrievalOrchestrator {
             LOG.warn('Sweep rerank failed, falling back to merged order', { error: error instanceof Error ? error.message : String(error) });
             return merged.slice(0, finalTopN);
         }
-    }
-
-    /** Выполняет существующий semantic embedding retrieval канал S без изменений общего embedding-module. */
-    private async retrieveSemantic(query: string, topN: number, signal?: AbortSignal): Promise<Neighbor[]> {
-        LOG.info('Sweep semantic retrieval starting', { queryChars: query.length, topN });
-        const neighbors = await this.embedding.retrieve(query, topN, signal);
-        const files = new Array<string>(neighbors.length);
-        for (let i = 0; i < neighbors.length; i++) {
-            files[i] = neighbors[i].filePath;
-        }
-        LOG.info('Sweep semantic retrieval completed', { neighbors: neighbors.length, files });
-        return neighbors;
     }
 
     /** Запускает Qwen3 rerank над prefix-срезом merged candidates и сохраняет index mapping. */

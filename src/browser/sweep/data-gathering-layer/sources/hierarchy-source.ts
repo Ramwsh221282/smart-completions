@@ -6,6 +6,7 @@ import * as monaco from '@theia/monaco-editor-core';
 import URI from '@theia/core/lib/common/uri';
 import { SweepLogger } from '../../../../common/sweep/logger';
 import { RelatedCandidate } from '../../../../common/sweep/related-files';
+import { RelatedSource, RelatedSourceContext } from './related-source';
 import { WorkspaceFiles } from './workspace-files';
 
 // Радиус окна вокруг найденного символа; достаточен чтобы показать модели контекст вызова или определения типа.
@@ -23,7 +24,9 @@ interface LspLikeItem {
 
 /** Использует call/type hierarchy LSP чтобы найти файлы-вызыватели и файлы с типами-предками для Sweep file-блоков. */
 @injectable()
-export class HierarchyRelatedSource {
+export class HierarchyRelatedSource implements RelatedSource {
+    readonly id = 'hierarchy';
+
     // Theia call hierarchy провайдер; нужен чтобы найти файлы где вызывается символ под курсором.
     @inject(CallHierarchyServiceProvider) protected readonly callProvider!: CallHierarchyServiceProvider;
     // Theia type hierarchy провайдер; нужен чтобы найти файлы с супер- и подтипами символа под курсором.
@@ -35,7 +38,8 @@ export class HierarchyRelatedSource {
      * Объединяет результаты call-hierarchy и type-hierarchy в один список кандидатов,
      * чтобы Sweep получил наиболее семантически связанные файлы для контекста.
      */
-    async collect(languageId: string, uri: URI, position: { line: number; character: number }, currentRelPath: string): Promise<RelatedCandidate[]> {
+    async collect(ctx: RelatedSourceContext): Promise<RelatedCandidate[]> {
+        const { languageId, uri, position, currentRelPath } = ctx;
         const candidates: RelatedCandidate[] = [];
         await this.collectCallers(languageId, uri, position, currentRelPath, candidates);
         await this.collectTypes(languageId, uri, position, currentRelPath, candidates);

@@ -4,6 +4,7 @@ import { inject, injectable } from '@theia/core/shared/inversify';
 import URI from '@theia/core/lib/common/uri';
 import { SweepLogger } from '../../../../common/sweep/logger';
 import { RelatedCandidate } from '../../../../common/sweep/related-files';
+import { RelatedSource, RelatedSourceContext } from './related-source';
 import { WorkspaceFiles } from './workspace-files';
 
 // Ограничение числа запросов, чтобы поиск не занимал всё время debounce-окна Sweep.
@@ -27,7 +28,9 @@ const SEARCH_OPTIONS: SearchInWorkspaceOptions = {
 
 /** Ищет файлы воркспейса по edit-signal символам чтобы найти связанные файлы для Sweep file-блоков. */
 @injectable()
-export class SearchRelatedSource {
+export class SearchRelatedSource implements RelatedSource {
+    readonly id = 'search';
+
     // Theia-сервис полнотекстового поиска; нужен для нахождения файлов с похожими идентификаторами.
     @inject(SearchInWorkspaceService) protected readonly search!: SearchInWorkspaceService;
     // Утилита файловых операций; нужна для получения относительных путей и окон найденных файлов.
@@ -37,7 +40,8 @@ export class SearchRelatedSource {
      * Выполняет несколько ограниченных символьных запросов и собирает файловые окна
      * вокруг совпадений, чтобы Sweep получил фрагменты файлов с реальным контекстом использования.
      */
-    async collect(queries: string[], currentRelPath: string): Promise<RelatedCandidate[]> {
+    async collect(ctx: RelatedSourceContext): Promise<RelatedCandidate[]> {
+        const { queries, currentRelPath } = ctx;
         const candidates: RelatedCandidate[] = [];
         for (let i = 0; i < queries.length && i < MAX_QUERIES; i++) {
             const query = queries[i];

@@ -14,6 +14,7 @@ import { SweepEditHistoryRecorder } from './sweep/data-gathering-layer/sweep-edi
 import { SweepContextCollector } from './sweep/data-gathering-layer/sweep-context-collector';
 import { SweepGraphLiveRecorder } from './sweep/data-gathering-layer/sweep-graph-live-recorder';
 import { HierarchyRelatedSource } from './sweep/data-gathering-layer/sources/hierarchy-source';
+import { RelatedSource } from './sweep/data-gathering-layer/sources/related-source';
 import { ScmChangedFilesSource } from './sweep/data-gathering-layer/sources/scm-source';
 import { SearchRelatedSource } from './sweep/data-gathering-layer/sources/search-source';
 import { SymbolSource } from './sweep/data-gathering-layer/sources/symbol-source';
@@ -42,9 +43,12 @@ export default new ContainerModule(bind => {
 
     bind(WorkspaceFiles).toSelf().inSingletonScope();
     bind(SymbolSource).toSelf().inSingletonScope();
-    bind(SearchRelatedSource).toSelf().inSingletonScope();
     bind(HierarchyRelatedSource).toSelf().inSingletonScope();
+    bind(RelatedSource).toService(HierarchyRelatedSource);
+    bind(SearchRelatedSource).toSelf().inSingletonScope();
+    bind(RelatedSource).toService(SearchRelatedSource);
     bind(ScmChangedFilesSource).toSelf().inSingletonScope();
+    bind(RelatedSource).toService(ScmChangedFilesSource);
     bind(SweepContextCollector).toSelf().inSingletonScope();
 
     bind(NesViewZoneRenderer).toSelf().inSingletonScope();

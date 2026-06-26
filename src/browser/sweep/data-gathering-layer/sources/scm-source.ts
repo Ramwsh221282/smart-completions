@@ -2,6 +2,7 @@ import { ScmService } from '@theia/scm/lib/browser/scm-service';
 import { inject, injectable } from '@theia/core/shared/inversify';
 import { SweepLogger } from '../../../../common/sweep/logger';
 import { RelatedCandidate } from '../../../../common/sweep/related-files';
+import { RelatedSource, RelatedSourceContext } from './related-source';
 import { WorkspaceFiles } from './workspace-files';
 
 // Ограничение числа co-changed файлов, чтобы SCM-сигнал не вытеснял более точные LSP-кандидаты из промпта.
@@ -13,7 +14,9 @@ const LOG = new SweepLogger('browser:data-gathering:scm-source');
 
 /** Собирает dirty/co-changed файлы из SCM как низкоприоритетный сигнал связанности для Sweep file-блоков. */
 @injectable()
-export class ScmChangedFilesSource {
+export class ScmChangedFilesSource implements RelatedSource {
+    readonly id = 'scm';
+
     // Theia SCM-сервис; нужен для обхода репозиториев и получения списка изменённых файлов.
     @inject(ScmService) protected readonly scm!: ScmService;
     // Утилита файловых операций; нужна для получения относительных путей и заголовков файлов.
@@ -23,7 +26,8 @@ export class ScmChangedFilesSource {
      * Читает заголовки SCM-изменённых файлов потому что generic SCM API не отдаёт точных диффов;
      * заголовок достаточен для понимания модели что это за файл и зачем он связан с текущей правкой.
      */
-    async collect(currentRelPath: string): Promise<RelatedCandidate[]> {
+    async collect(ctx: RelatedSourceContext): Promise<RelatedCandidate[]> {
+        const { currentRelPath } = ctx;
         const candidates: RelatedCandidate[] = [];
         const seen = new Set<string>();
         try {
