@@ -32,7 +32,7 @@ test('SweepRerankerClient posts /rerank and sorts relevance_score results', asyn
     try {
         const client = new SweepRerankerClient();
         const results = await client.rerank({
-            baseUrl: 'http://127.0.0.1:8040/v1',
+            baseUrl: 'http://127.0.0.1:8030/v1',
             model: 'qwen3-reranker-0.6b',
             query: 'Instruct: rank\nQuery: symbol',
             documents: ['raw doc 0', 'raw doc 1'],

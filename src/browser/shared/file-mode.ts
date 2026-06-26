@@ -41,6 +41,8 @@ const CODE_LANGUAGES = new Set([
     'solidity',
     'objc',
     'objective-c',
+    'nix',
+    'nim',
 ]);
 
 export function fileModeForLanguage(languageId: string): FileMode {

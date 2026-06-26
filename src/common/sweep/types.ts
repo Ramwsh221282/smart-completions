@@ -16,7 +16,7 @@ export const DEFAULT_SWEEP_RERANK_INSTRUCTION = "Instruct: Given the current cod
 /** Default Sweep rerank config keeps the second-stage ranking opt-in and latency-bounded. */
 export const DEFAULT_SWEEP_RERANK_CONFIG: SweepRerankConfig = {
     enabled: false,
-    llamaUrl: 'http://127.0.0.1:8040/v1',
+    llamaUrl: 'http://127.0.0.1:8030/v1',
     model: 'qwen3-reranker-0.6b',
     instruction: DEFAULT_SWEEP_RERANK_INSTRUCTION,
     candidatePoolN: 24,
@@ -40,6 +40,30 @@ export interface SweepRerankConfig {
     maxDocChars: number;
 }
 
+/** Флаг-гейт структурного Sweep CodeGraph retrieval канала; default true по текущему требованию внедрения. */
+export interface SweepGraphConfig {
+    enabled: boolean;
+}
+
+/** Флаг-гейт Sweep fuzzy symbol retrieval канала; default true по текущему требованию внедрения. */
+export interface SweepFuzzyConfig {
+    enabled: boolean;
+}
+
+/** Default CodeGraph config включает структурный канал во всех новых Sweep-запросах. */
+export const DEFAULT_SWEEP_GRAPH_CONFIG: SweepGraphConfig = { enabled: true };
+
+/** Default fuzzy config включает нечёткий symbol retrieval во всех новых Sweep-запросах. */
+export const DEFAULT_SWEEP_FUZZY_CONFIG: SweepFuzzyConfig = { enabled: true };
+
+/** Набор edit-сигналов, который питает code-only каналы CodeGraph и Fuzzy. */
+export interface GraphQuerySignals {
+    cursorSymbol: string;
+    renamedSymbols: string[];
+    diagnosticSymbols: string[];
+    importedSymbols: string[];
+}
+
 /**
  * Конфигурация активной Sweep-модели; хранится в бекенде и обновляется через NES-фасад при изменении preferences.
  * Параметры model-specific потому что слоты контекста, inject-diagnostics и RAG различаются между sweep-default и sweep-small.
@@ -57,6 +81,8 @@ export interface SweepConfig {
     profile: SweepModelProfile;
     requestModelName: string;
     rerank: SweepRerankConfig;
+    graph: SweepGraphConfig;
+    fuzzy: SweepFuzzyConfig;
 }
 
 /**

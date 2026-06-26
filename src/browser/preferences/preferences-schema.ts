@@ -5,7 +5,7 @@ import { FimConfig } from '../../common/fim-types';
 import { DEFAULT_DIAGNOSTICS_GATE_CONFIG, NesConfig } from '../../common/nes-types';
 import { EmbedModelId, FimModelId, GenerationMode, NesModelId, VectorDbId } from '../../common/model-types';
 import { SweepProfileId, getSweepProfile, sweepProfileIdForModel, sweepRequestModelName } from '../../common/sweep/profiles';
-import { DEFAULT_SWEEP_RERANK_CONFIG } from '../../common/sweep/types';
+import { DEFAULT_SWEEP_FUZZY_CONFIG, DEFAULT_SWEEP_GRAPH_CONFIG, DEFAULT_SWEEP_RERANK_CONFIG } from '../../common/sweep/types';
 
 /** Схема настроек smart-completions для FIM/NES, coordination mode и embedding-инфраструктуры. */
 export const SMART_COMPLETIONS_PREFERENCE_SCHEMA: PreferenceSchema = {
@@ -145,7 +145,7 @@ export const SMART_COMPLETIONS_PREFERENCE_SCHEMA: PreferenceSchema = {
         },
         'smart-completions.nes.rerank.llamaUrl': {
             type: 'string',
-            default: 'http://127.0.0.1:8040/v1',
+            default: DEFAULT_SWEEP_RERANK_CONFIG.llamaUrl,
             description: 'llama.cpp base URL for the Qwen3 reranker server.',
         },
         'smart-completions.nes.rerank.model': {
@@ -187,6 +187,16 @@ export const SMART_COMPLETIONS_PREFERENCE_SCHEMA: PreferenceSchema = {
             type: 'number',
             default: 2000,
             description: 'Maximum characters per candidate document sent to the reranker.',
+        },
+        'smart-completions.nes.graph.enabled': {
+            type: 'boolean',
+            default: true,
+            description: 'Enable Sweep CodeGraph retrieval channel.',
+        },
+        'smart-completions.nes.fuzzy.enabled': {
+            type: 'boolean',
+            default: true,
+            description: 'Enable Sweep fuzzy symbol retrieval channel.',
         },
         'smart-completions.nes.diagnosticsGate.enabled': {
             type: 'boolean',
@@ -319,6 +329,12 @@ export function readNesConfig(preferences: PreferenceService): NesConfig {
             ambiguityMargin: preferences.get<number>('smart-completions.nes.rerank.ambiguityMargin', DEFAULT_SWEEP_RERANK_CONFIG.ambiguityMargin),
             timeoutMs: preferences.get<number>('smart-completions.nes.rerank.timeoutMs', DEFAULT_SWEEP_RERANK_CONFIG.timeoutMs),
             maxDocChars: preferences.get<number>('smart-completions.nes.rerank.maxDocChars', DEFAULT_SWEEP_RERANK_CONFIG.maxDocChars),
+        },
+        graph: {
+            enabled: preferences.get<boolean>('smart-completions.nes.graph.enabled', DEFAULT_SWEEP_GRAPH_CONFIG.enabled),
+        },
+        fuzzy: {
+            enabled: preferences.get<boolean>('smart-completions.nes.fuzzy.enabled', DEFAULT_SWEEP_FUZZY_CONFIG.enabled),
         },
         diagnosticsGate: {
             enabled: preferences.get<boolean>('smart-completions.nes.diagnosticsGate.enabled', DEFAULT_DIAGNOSTICS_GATE_CONFIG.enabled),

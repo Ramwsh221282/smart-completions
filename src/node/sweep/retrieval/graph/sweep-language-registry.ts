@@ -1,5 +1,7 @@
-// languageId (Monaco/Theia, разные написания) → имя грамматики в tree-sitter-wasms/out/.
-// Наличие грамматики => режим «код»; иначе — «проза» (fallback).
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+
+/** Monaco/Theia languageId → tree-sitter grammar name для Sweep-local CodeGraph. */
 const GRAMMAR_BY_LANGUAGE: Record<string, string> = {
     typescript: 'typescript',
     typescriptreact: 'tsx',
@@ -45,17 +47,7 @@ const GRAMMAR_BY_LANGUAGE: Record<string, string> = {
     nim: 'nim',
 };
 
-/** Имя tree-sitter грамматики для languageId, либо undefined (→ проза). */
-export function grammarForLanguage(languageId: string): string | undefined {
-    return GRAMMAR_BY_LANGUAGE[languageId.toLowerCase()];
-}
-
-/** Есть ли tree-sitter грамматика → режим «код». */
-export function isCodeLanguage(languageId: string): boolean {
-    return grammarForLanguage(languageId) !== undefined;
-}
-
-// Расширение файла → languageId (для индексатора, который видит только путь на fs).
+/** Расширение файла → languageId для backend disk indexing, где Monaco languageId недоступен. */
 const LANGUAGE_BY_EXT: Record<string, string> = {
     '.ts': 'typescript',
     '.mts': 'typescript',
@@ -105,19 +97,40 @@ const LANGUAGE_BY_EXT: Record<string, string> = {
     '.yaml': 'yaml',
     '.yml': 'yaml',
     '.toml': 'toml',
-    // проза
-    '.md': 'markdown',
-    '.markdown': 'markdown',
-    '.mdx': 'markdown',
-    '.txt': 'plaintext',
-    '.rst': 'restructuredtext',
-    '.tex': 'latex',
-    '.typ': 'typst',
-    '.adoc': 'asciidoc',
-    '.org': 'org',
 };
 
-/** languageId по расширению (best-effort; неизвестное → plaintext → проза). */
-export function languageIdForExtension(ext: string): string {
+/** Возвращает grammar name для code-only Sweep graph каналов или undefined для prose/unsupported. */
+export function sweepGrammarForLanguage(languageId: string): string | undefined {
+    return GRAMMAR_BY_LANGUAGE[languageId.toLowerCase()];
+}
+
+/** Возвращает true только для языков, где CodeGraph/Fuzzy имеют символьный смысл. */
+export function isSweepCodeLanguage(languageId: string): boolean {
+    return sweepGrammarForLanguage(languageId) !== undefined;
+}
+
+/** Определяет languageId по расширению для disk indexer; неизвестное расширение становится prose no-op. */
+export function sweepLanguageIdForExtension(ext: string): string {
     return LANGUAGE_BY_EXT[ext.toLowerCase()] ?? 'plaintext';
+}
+
+/** Резолвит grammar WASM: bundled Nix/Nim resources имеют приоритет над tree-sitter-wasms. */
+export function resolveGrammarWasm(grammar: string): string {
+    const candidates = grammarResourceCandidates(grammar);
+    for (let i = 0; i < candidates.length; i++) {
+        if (fs.existsSync(candidates[i])) {
+            return candidates[i];
+        }
+    }
+    return require.resolve(`tree-sitter-wasms/out/tree-sitter-${grammar}.wasm`);
+}
+
+/** Возвращает кандидаты resource-путей для runtime lib и test/build окружений. */
+function grammarResourceCandidates(grammar: string): string[] {
+    const file = `tree-sitter-${grammar}.wasm`;
+    return [
+        path.resolve(__dirname, '../../../../resources/grammars', file),
+        path.resolve(process.cwd(), 'resources/grammars', file),
+        path.resolve(process.cwd(), 'smart-completions/resources/grammars', file),
+    ];
 }

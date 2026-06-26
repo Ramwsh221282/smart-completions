@@ -8,10 +8,17 @@ import {
     EmbeddingIndexService,
     EmbeddingIndexClient,
     EMBEDDING_SERVICE_PATH,
+    SweepGraphService,
+    SWEEP_GRAPH_SERVICE_PATH,
 } from '../common/protocol';
 import { EmbeddingIndexServiceImpl } from './services/embedding-index-service';
 import { FimBackendServiceImpl } from './services/fim-backend-service';
 import { NesBackendServiceImpl } from './services/nes-backend-service';
+import { SweepGraphServiceImpl } from './services/sweep-graph-service';
+import { SweepFuzzyChannel } from './sweep/retrieval/fuzzy/sweep-fuzzy-channel';
+import { SweepGraphChannel } from './sweep/retrieval/graph/sweep-graph-channel';
+import { SweepGraphIndexer } from './sweep/retrieval/graph/sweep-graph-indexer';
+import { SweepRetrievalOrchestrator } from './sweep/retrieval/sweep-retrieval-orchestrator';
 import { SweepBackendService } from './sweep/sweep-backend-service';
 
 /**
@@ -25,6 +32,12 @@ export default new ContainerModule(bind => {
     bind(NesBackendServiceImpl).toSelf().inSingletonScope();
     bind(NesBackendService).toService(NesBackendServiceImpl);
     bind(SweepBackendService).toSelf().inSingletonScope();
+    bind(SweepGraphServiceImpl).toSelf().inSingletonScope();
+    bind(SweepGraphService).toService(SweepGraphServiceImpl);
+    bind(SweepFuzzyChannel).toSelf().inSingletonScope();
+    bind(SweepGraphIndexer).toSelf().inSingletonScope();
+    bind(SweepGraphChannel).toSelf().inSingletonScope();
+    bind(SweepRetrievalOrchestrator).toSelf().inSingletonScope();
 
     bind(EmbeddingIndexServiceImpl).toSelf().inSingletonScope();
     bind(EmbeddingIndexService).toService(EmbeddingIndexServiceImpl);
@@ -35,6 +48,10 @@ export default new ContainerModule(bind => {
 
     bind(ConnectionHandler)
         .toDynamicValue(ctx => new RpcConnectionHandler(NES_SERVICE_PATH, () => ctx.container.get(NesBackendServiceImpl)))
+        .inSingletonScope();
+
+    bind(ConnectionHandler)
+        .toDynamicValue(ctx => new RpcConnectionHandler(SWEEP_GRAPH_SERVICE_PATH, () => ctx.container.get(SweepGraphServiceImpl)))
         .inSingletonScope();
 
     bind(ConnectionHandler)

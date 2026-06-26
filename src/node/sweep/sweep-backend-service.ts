@@ -8,28 +8,27 @@ import { RecentEdit } from '../../common/edit-history-types';
 import { SweepLogger } from '../../common/sweep/logger';
 import { getSweepProfile, sweepRequestModelName } from '../../common/sweep/profiles';
 import { buildSweepRetrievalQuery } from '../../common/sweep/retrieval-queries';
-import { DEFAULT_SWEEP_RERANK_CONFIG, SweepConfig, SweepRequest, SweepResponse, SweepRerankConfig } from '../../common/sweep/types';
+import { diagnosticSymbols, importedSymbols, renamedSymbols, symbolAtCursor } from '../../common/sweep/signals';
+import { DEFAULT_SWEEP_FUZZY_CONFIG, DEFAULT_SWEEP_GRAPH_CONFIG, DEFAULT_SWEEP_RERANK_CONFIG, GraphQuerySignals, SweepConfig, SweepRequest, SweepResponse, SweepRerankConfig } from '../../common/sweep/types';
 import { normalizeCrlf } from '../../common/text/crlf';
 import { EmbeddingIndexServiceImpl } from '../services/embedding-index-service';
 import { LlamaSweepClient } from './model-call-layer/llama-sweep-client';
 import { parseSweepCompletion } from './model-call-layer/sweep-response-parser';
 import { SweepSyntaxGate } from './model-call-layer/syntax-gate';
 import { buildSweepPrompt } from './prompt-creating-layer/sweep-prompt-builder';
-import { buildSweepRerankQuery, clipRerankDocument, isAmbiguous, looksBroken, SweepRerankerClient } from './retrieval/rerank/sweep-reranker-client';
+import { SweepRetrievalOrchestrator } from './retrieval/sweep-retrieval-orchestrator';
 import { QwenTokenCounter } from './token-budget/token-counter';
 
 // Логгер бекенд-оркестратора; нужен для сквозной диагностики полного цикла предсказания от retrieval до парсинга.
 const LOG = new SweepLogger('node:backend-service');
 const DEFAULT_SWEEP_PROFILE = getSweepProfile('v2-7b');
 
-/** Warmup timeout даёт холодному reranker server шанс загрузить модель вне hot path. */
-const RERANK_WARMUP_TIMEOUT_MS = 15000;
-
 /** Оркестрирует полный цикл Sweep-предсказания: RAG-retrieval → промпт → llama.cpp → парсинг → NES-ответ. */
 @injectable()
 export class SweepBackendService {
     // Embedding-сервис; нужен для RAG-retrieval и получения workspace roots для нормализации путей.
     @inject(EmbeddingIndexServiceImpl) private readonly embedding!: EmbeddingIndexServiceImpl;
+    @inject(SweepRetrievalOrchestrator) private readonly retrieval!: SweepRetrievalOrchestrator;
 
     // Конфиг с дефолтами; перезаписывается через configure() при изменении preferences на фронтенде.
     private config: SweepConfig = {
@@ -44,6 +43,8 @@ export class SweepBackendService {
         profile: DEFAULT_SWEEP_PROFILE,
         requestModelName: sweepRequestModelName(DEFAULT_SWEEP_PROFILE.id, ''),
         rerank: DEFAULT_SWEEP_RERANK_CONFIG,
+        graph: DEFAULT_SWEEP_GRAPH_CONFIG,
+        fuzzy: DEFAULT_SWEEP_FUZZY_CONFIG,
     };
 
     // Клиент llama.cpp; создаётся один раз потому что не хранит состояния между вызовами.
@@ -52,8 +53,6 @@ export class SweepBackendService {
     private readonly tokenCounter = new QwenTokenCounter();
     // Syntax gate держит parser и WASM-грамматики в памяти между запросами, чтобы проверка была дешёвой.
     private readonly syntaxGate = new SweepSyntaxGate();
-    private readonly reranker = new SweepRerankerClient();
-    private rerankerBroken = false;
 
     /**
      * Принимает новый конфиг от фронтенда через NES-фасад; contextSize клампируется снизу
@@ -64,13 +63,12 @@ export class SweepBackendService {
             ...config,
             contextSize: Math.max(1024, config.contextSize),
             rerank: sanitizeRerankConfig(config.rerank),
+            graph: config.graph ?? DEFAULT_SWEEP_GRAPH_CONFIG,
+            fuzzy: config.fuzzy ?? DEFAULT_SWEEP_FUZZY_CONFIG,
         };
-        this.rerankerBroken = false;
         LOG.info('Sweep backend configured', { ...this.config, contextProfile: this.config.profile.id });
         await this.tokenCounter.ensureReady();
-        if (this.config.rerank.enabled) {
-            await this.warmupReranker(this.config.rerank);
-        }
+        await this.retrieval.configure(this.config.rerank);
     }
 
     /**
@@ -179,115 +177,18 @@ export class SweepBackendService {
         if (options.topN <= 0) {
             return [];
         }
-        const rerank = this.config.rerank;
-        if (!rerank.enabled || this.rerankerBroken) {
-            return this.retrieveRrfNeighbors(query, options.topN, signal);
-        }
-        const finalTopN = Math.max(1, Math.min(rerank.finalTopN, options.topN));
-        const poolN = Math.max(finalTopN, rerank.candidatePoolN);
-        const merged = await this.retrieveRrfNeighbors(query, poolN, signal);
-        if (!isAmbiguous(merged, rerank.ambiguityMargin, finalTopN)) {
-            if (process.env.NODE_ENV === 'development') {
-                LOG.debug('Sweep rerank skipped by ambiguity gate', this.rerankGateLog(merged, rerank.ambiguityMargin, finalTopN, false));
-            }
-            return merged.slice(0, finalTopN);
-        }
-        if (process.env.NODE_ENV === 'development') {
-            LOG.debug('Sweep rerank enabled by ambiguity gate', this.rerankGateLog(merged, rerank.ambiguityMargin, finalTopN, true));
-        }
-        try {
-            return await this.rerankNeighbors(merged, query, rerank, finalTopN, signal);
-        } catch (error) {
-            LOG.warn('Sweep rerank failed, falling back to RRF order', { error: error instanceof Error ? error.message : String(error) });
-            return merged.slice(0, finalTopN);
-        }
-    }
-
-    /** Выполняет текущий RRF retrieval и логирует итоговые файлы без знания о rerank слое. */
-    private async retrieveRrfNeighbors(query: string, topN: number, signal?: AbortSignal): Promise<Neighbor[]> {
-        LOG.info('Sweep retrieval starting', { queryChars: query.length, topN });
-        const neighbors = await this.embedding.retrieve(query, topN, signal);
-        const files = new Array<string>(neighbors.length);
-        for (let i = 0; i < neighbors.length; i++) {
-            files[i] = neighbors[i].filePath;
-        }
-        LOG.info('Sweep retrieval completed', { neighbors: neighbors.length, files });
-        return neighbors;
-    }
-
-    /** Запускает Qwen3 rerank над prefix-срезом RRF-кандидатов и сохраняет корректный index mapping. */
-    private async rerankNeighbors(merged: Neighbor[], baseQuery: string, config: SweepRerankConfig, finalTopN: number, signal?: AbortSignal): Promise<Neighbor[]> {
-        const candidateCount = Math.min(Math.max(finalTopN, config.rerankTopN), merged.length);
-        const candidates = merged.slice(0, candidateCount);
-        const documents = new Array<string>(candidates.length);
-        for (let i = 0; i < candidates.length; i++) {
-            documents[i] = clipRerankDocument(candidates[i].text, config.maxDocChars);
-        }
-        const ranked = await this.reranker.rerank({
-            baseUrl: config.llamaUrl,
-            model: config.model,
-            query: buildSweepRerankQuery(config.instruction, baseQuery),
-            documents,
-            topN: documents.length,
-            timeoutMs: config.timeoutMs,
-            signal,
-        });
-        if (looksBroken(ranked)) {
-            this.rerankerBroken = true;
-            throw new Error('reranker returned degenerate scores');
-        }
-        const selected: Neighbor[] = [];
-        const used = new Set<number>();
-        for (let i = 0; i < ranked.length && selected.length < finalTopN; i++) {
-            const index = ranked[i].index;
-            if (!Number.isInteger(index) || index < 0 || index >= candidates.length) {
-                throw new Error(`reranker returned invalid index ${index}`);
-            }
-            if (used.has(index)) {
-                continue;
-            }
-            used.add(index);
-            selected.push({ ...candidates[index], score: ranked[i].score });
-        }
-        let fallbackScore = selected.length > 0 ? selected[selected.length - 1].score : 0;
-        for (let i = 0; i < candidates.length && selected.length < finalTopN; i++) {
-            if (!used.has(i)) {
-                fallbackScore -= 1;
-                selected.push({ ...candidates[i], score: fallbackScore });
-            }
-        }
-        LOG.info('Sweep rerank completed', { inputCandidates: candidates.length, selected: selected.length });
-        return selected;
-    }
-
-    /** Прогревает reranker server при включённом rerank, не ломая configure при сетевой ошибке. */
-    private async warmupReranker(config: SweepRerankConfig): Promise<void> {
-        try {
-            const ranked = await this.reranker.rerank({
-                baseUrl: config.llamaUrl,
-                model: config.model,
-                query: buildSweepRerankQuery(config.instruction, 'warmup'),
-                documents: ['function warmup() { return true; }'],
-                topN: 1,
-                timeoutMs: Math.max(config.timeoutMs, RERANK_WARMUP_TIMEOUT_MS),
-            });
-            if (looksBroken(ranked)) {
-                this.rerankerBroken = true;
-                LOG.warn('Sweep rerank warmup returned degenerate scores');
-            }
-        } catch (error) {
-            LOG.warn('Sweep rerank warmup failed', { error: error instanceof Error ? error.message : String(error) });
-        }
-    }
-
-    /** Формирует dev-only метрики RRF границы, чтобы подбирать ambiguityMargin по реальным score. */
-    private rerankGateLog(merged: Neighbor[], margin: number, finalTopN: number, triggered: boolean): { cutoffScore: number; nextScore: number; margin: number; triggered: boolean } {
-        return {
-            cutoffScore: merged[finalTopN - 1]?.score ?? 0,
-            nextScore: merged[finalTopN]?.score ?? 0,
-            margin,
-            triggered,
+        const signals: GraphQuerySignals = {
+            cursorSymbol: symbolAtCursor(windowText, request.cursorOffset),
+            renamedSymbols: renamedSymbols(request.recentEdits),
+            diagnosticSymbols: diagnosticSymbols(request.diagnostics),
+            importedSymbols: importedSymbols(windowText),
         };
+        const fuzzySymbols = [signals.cursorSymbol, ...signals.renamedSymbols, ...signals.diagnosticSymbols];
+        return this.retrieval.retrieve({ query, fileMode: request.fileMode, signals, fuzzySymbols, topN: options.topN, signal }, {
+            rerank: this.config.rerank,
+            graph: this.config.graph,
+            fuzzy: this.config.fuzzy,
+        });
     }
 
     /**

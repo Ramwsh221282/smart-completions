@@ -12,7 +12,7 @@ import { LlamaNesClient } from '../nes-module/model-call/llama-nes-client';
 import { parseNesCompletion } from '../nes-module/model-call/response-parser';
 import { normalizeCrlf } from '../util/crlf';
 import { getSweepProfile, sweepRequestModelName } from '../../common/sweep/profiles';
-import { DEFAULT_SWEEP_RERANK_CONFIG, SweepConfig, SweepRequest } from '../../common/sweep/types';
+import { DEFAULT_SWEEP_FUZZY_CONFIG, DEFAULT_SWEEP_GRAPH_CONFIG, DEFAULT_SWEEP_RERANK_CONFIG, SweepConfig, SweepRequest } from '../../common/sweep/types';
 import { SweepBackendService } from '../sweep/sweep-backend-service';
 import { EmbeddingIndexServiceImpl } from './embedding-index-service';
 
@@ -30,6 +30,8 @@ const DEFAULT_NES_CONFIG: NesConfig = {
     profile: DEFAULT_SWEEP_PROFILE,
     requestModelName: sweepRequestModelName(DEFAULT_SWEEP_PROFILE.id, ''),
     rerank: DEFAULT_SWEEP_RERANK_CONFIG,
+    graph: DEFAULT_SWEEP_GRAPH_CONFIG,
+    fuzzy: DEFAULT_SWEEP_FUZZY_CONFIG,
     diagnosticsGate: DEFAULT_DIAGNOSTICS_GATE_CONFIG,
 };
 

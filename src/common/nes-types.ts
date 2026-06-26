@@ -2,7 +2,7 @@ import { FileMode } from './mode-types';
 import { RecentEdit } from './edit-history-types';
 import { DiagnosticDTO, RangeDTO, PositionDTO, TextEditDTO } from './editor-dto';
 import { NesModelId } from './model-types';
-import type { SweepRerankConfig } from './sweep/types';
+import type { SweepFuzzyConfig, SweepGraphConfig, SweepRerankConfig } from './sweep/types';
 import type { SweepModelProfile } from './sweep/profiles';
 
 /** Объём предлагаемой правки/диффа (не «длина генерации»). */
@@ -46,6 +46,8 @@ export interface NesConfig {
     /** Exact llama.cpp model field; free string to match the running server. */
     requestModelName: string;
     rerank: SweepRerankConfig;
+    graph: SweepGraphConfig;
+    fuzzy: SweepFuzzyConfig;
     diagnosticsGate: DiagnosticsGateConfig;
 }
 

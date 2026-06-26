@@ -11,6 +11,8 @@ import {
     EmbeddingIndexService,
     EmbeddingIndexClient,
     EMBEDDING_SERVICE_PATH,
+    SweepGraphService,
+    SWEEP_GRAPH_SERVICE_PATH,
 } from '../common/protocol';
 import { EmbeddingIndexClientImpl } from './embedding/index-client';
 
@@ -44,6 +46,16 @@ export function bindNesProxy(bind: interfaces.Bind): void {
         .toDynamicValue(ctx => {
             const provider = ctx.container.get<ServiceConnectionProvider>(RemoteConnectionProvider);
             return provider.createProxy<NesBackendService>(NES_SERVICE_PATH);
+        })
+        .inSingletonScope();
+}
+
+/** Привязка RPC-прокси Sweep CodeGraph backend-сервиса. */
+export function bindSweepGraphProxy(bind: interfaces.Bind): void {
+    bind(SweepGraphService)
+        .toDynamicValue(ctx => {
+            const provider = ctx.container.get<ServiceConnectionProvider>(RemoteConnectionProvider);
+            return provider.createProxy<SweepGraphService>(SWEEP_GRAPH_SERVICE_PATH);
         })
         .inSingletonScope();
 }

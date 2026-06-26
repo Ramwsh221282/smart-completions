@@ -14,6 +14,7 @@ import {
 export const FIM_SERVICE_PATH = '/services/smart-completions/fim';
 export const NES_SERVICE_PATH = '/services/smart-completions/nes';
 export const EMBEDDING_SERVICE_PATH = '/services/smart-completions/embedding';
+export const SWEEP_GRAPH_SERVICE_PATH = '/services/smart-completions/sweep-graph';
 
 /** FIM-инференс (backend). context-formation + model-call внутри. */
 export const FimBackendService = Symbol('FimBackendService');
@@ -45,4 +46,11 @@ export interface EmbeddingIndexService extends RpcServer<EmbeddingIndexClient> {
     testConnection(target: ConnTarget): Promise<TestResult>;
     /** workspaceRoots — fs-пути корней воркспейса (frontend знает их из WorkspaceService). */
     configure(config: EmbeddingConfig, workspaceRoots: string[]): Promise<void>;
+}
+
+/** Управление Sweep CodeGraph индексом: full workspace configure и live/disk reindex файлов. */
+export const SweepGraphService = Symbol('SweepGraphService');
+export interface SweepGraphService {
+    configure(workspaceRoots: string[], enabled: boolean): Promise<void>;
+    reindexFile(uri: string, source?: string, languageId?: string): Promise<void>;
 }

@@ -3,7 +3,7 @@ import { FrontendApplicationContribution, KeybindingContribution } from '@theia/
 import { CommandContribution } from '@theia/core/lib/common';
 import { PreferenceContribution } from '@theia/core/lib/common/preferences/preference-schema';
 import { SMART_COMPLETIONS_PREFERENCE_SCHEMA } from './preferences/preferences-schema';
-import { bindEmbeddingProxy, bindFimProxy, bindNesProxy } from './proxies';
+import { bindEmbeddingProxy, bindFimProxy, bindNesProxy, bindSweepGraphProxy } from './proxies';
 import { EmbeddingConfigSync } from './embedding/config-sync';
 import { SmartCompletionsStatusBar } from './status-bar/status-bar';
 import { SmartCompletionsCommands } from './commands';
@@ -12,6 +12,7 @@ import { NesController } from './nes-module/nes-controller';
 import { NesViewZoneRenderer } from './nes-render/nes-view-zone-renderer';
 import { SweepEditHistoryRecorder } from './sweep/data-gathering-layer/sweep-edit-history-recorder';
 import { SweepContextCollector } from './sweep/data-gathering-layer/sweep-context-collector';
+import { SweepGraphLiveRecorder } from './sweep/data-gathering-layer/sweep-graph-live-recorder';
 import { HierarchyRelatedSource } from './sweep/data-gathering-layer/sources/hierarchy-source';
 import { OutputSource } from './sweep/data-gathering-layer/sources/output-source';
 import { ScmChangedFilesSource } from './sweep/data-gathering-layer/sources/scm-source';
@@ -30,9 +31,12 @@ export default new ContainerModule(bind => {
     bindFimProxy(bind);
     bindNesProxy(bind);
     bindEmbeddingProxy(bind);
+    bindSweepGraphProxy(bind);
 
     bind(SweepEditHistoryRecorder).toSelf().inSingletonScope();
     bind(FrontendApplicationContribution).toService(SweepEditHistoryRecorder);
+    bind(SweepGraphLiveRecorder).toSelf().inSingletonScope();
+    bind(FrontendApplicationContribution).toService(SweepGraphLiveRecorder);
 
     bind(FimInlineProvider).toSelf().inSingletonScope();
     bind(FrontendApplicationContribution).toService(FimInlineProvider);
