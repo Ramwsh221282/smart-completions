@@ -88,6 +88,10 @@ export class SweepGraphLiveRecorder implements FrontendApplicationContribution, 
     /** Проверяет актуальные NES preferences, чтобы выключение каналов сразу останавливало live traffic. */
     private isEnabled(): boolean {
         const config = readNesConfig(this.preferences);
-        return (config.modelId === 'sweep-default' || config.modelId === 'sweep-small') && (config.graph.enabled || config.fuzzy.enabled);
+        return isStructuredRetrievalModel(config.modelId) && (config.graph.enabled || config.fuzzy.enabled);
     }
+}
+
+function isStructuredRetrievalModel(modelId: string): boolean {
+    return modelId === 'sweep-default' || modelId === 'sweep-small' || modelId === 'zeta-2.1';
 }

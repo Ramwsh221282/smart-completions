@@ -13,6 +13,8 @@ import {
     EMBEDDING_SERVICE_PATH,
     SweepGraphService,
     SWEEP_GRAPH_SERVICE_PATH,
+    ZetaBackendService,
+    ZETA_SERVICE_PATH,
 } from '../common/protocol';
 import { EmbeddingIndexClientImpl } from './embedding/index-client';
 
@@ -46,6 +48,16 @@ export function bindNesProxy(bind: interfaces.Bind): void {
         .toDynamicValue(ctx => {
             const provider = ctx.container.get<ServiceConnectionProvider>(RemoteConnectionProvider);
             return provider.createProxy<NesBackendService>(NES_SERVICE_PATH);
+        })
+        .inSingletonScope();
+}
+
+/** Привязка RPC-прокси Zeta backend-сервиса. */
+export function bindZetaProxy(bind: interfaces.Bind): void {
+    bind(ZetaBackendService)
+        .toDynamicValue(ctx => {
+            const provider = ctx.container.get<ServiceConnectionProvider>(RemoteConnectionProvider);
+            return provider.createProxy<ZetaBackendService>(ZETA_SERVICE_PATH);
         })
         .inSingletonScope();
 }

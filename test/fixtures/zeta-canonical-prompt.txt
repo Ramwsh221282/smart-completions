@@ -1,0 +1,19 @@
+<[fim-suffix]>
+code after editable region
+<[fim-prefix]><filename>related/file.py
+related file content
+
+<filename>edit_history
+--- a/some_file.py
++++ b/some_file.py
+-old
++new
+
+<filename>path/to/target_file.py
+code before editable region
+<|marker_1|>
+code that
+needs to<|user_cursor|>
+be rewritten
+<|marker_2|>
+<[fim-middle]>

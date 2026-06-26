@@ -64,7 +64,7 @@ export class EmbeddingConfigSync implements FrontendApplicationContribution {
     }
 
     private isSweepGraphEnabled(config: ReturnType<typeof readNesConfig>): boolean {
-        return (config.modelId === 'sweep-default' || config.modelId === 'sweep-small') && (config.graph.enabled || config.fuzzy.enabled);
+        return isStructuredRetrievalModel(config.modelId) && (config.graph.enabled || config.fuzzy.enabled);
     }
 
     private isOpenModel(uri: string): boolean {
@@ -74,4 +74,8 @@ export class EmbeddingConfigSync implements FrontendApplicationContribution {
             return false;
         }
     }
+}
+
+function isStructuredRetrievalModel(modelId: string): boolean {
+    return modelId === 'sweep-default' || modelId === 'sweep-small' || modelId === 'zeta-2.1';
 }

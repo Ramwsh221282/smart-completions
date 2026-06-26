@@ -150,9 +150,9 @@ export class SweepController implements FrontendApplicationContribution, Disposa
      * Пропускает вызов если NES отключён или активен режим fim-only.
      */
     private schedule(editor: monaco.editor.ICodeEditor): void {
-        if (!this.enabled || this.coordinationMode === 'fim-only') {
+        if (!this.enabled || this.coordinationMode === 'fim-only' || !this.isActiveModel()) {
             if (process.env.NODE_ENV === 'development') {
-                LOG.debug('Sweep schedule skipped', { enabled: this.enabled, coordinationMode: this.coordinationMode });
+                LOG.debug('Sweep schedule skipped', { enabled: this.enabled, coordinationMode: this.coordinationMode, activeModel: this.isActiveModel() });
             }
             return;
         }
@@ -173,9 +173,9 @@ export class SweepController implements FrontendApplicationContribution, Disposa
     private async trigger(editor: monaco.editor.ICodeEditor): Promise<void> {
         const model = editor.getModel();
         const position = editor.getPosition();
-        if (!model || !position || !this.enabled || this.coordinationMode === 'fim-only') {
+        if (!model || !position || !this.enabled || this.coordinationMode === 'fim-only' || !this.isActiveModel()) {
             if (process.env.NODE_ENV === 'development') {
-                LOG.debug('Sweep trigger skipped before snapshot', { hasModel: Boolean(model), hasPosition: Boolean(position), enabled: this.enabled, coordinationMode: this.coordinationMode });
+                LOG.debug('Sweep trigger skipped before snapshot', { hasModel: Boolean(model), hasPosition: Boolean(position), enabled: this.enabled, coordinationMode: this.coordinationMode, activeModel: this.isActiveModel() });
             }
             return;
         }
@@ -244,12 +244,24 @@ export class SweepController implements FrontendApplicationContribution, Disposa
         this.config = readNesConfig(this.preferences);
         this.enabled = this.preferences.get<boolean>('smart-completions.nes.enabled', true);
         this.coordinationMode = this.preferences.get<CoordinationMode>('smart-completions.coordinationMode', 'exclusive-priority');
+        if (!this.isActiveModel()) {
+            this.inFlight?.cancel();
+            if (this.timer) {
+                clearTimeout(this.timer);
+                this.timer = undefined;
+            }
+            this.renderer.dismiss();
+        }
         try {
             await this.nes.configure(this.config);
             LOG.info('Sweep controller pushed NES config', { modelId: this.config.modelId, enabled: this.enabled, coordinationMode: this.coordinationMode });
         } catch (error) {
             LOG.warn('Sweep controller failed to push config', { error: error instanceof Error ? error.message : String(error) });
         }
+    }
+
+    private isActiveModel(): boolean {
+        return this.config.modelId === 'sweep-default' || this.config.modelId === 'sweep-small';
     }
 }
 

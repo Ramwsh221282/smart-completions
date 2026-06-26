@@ -36,6 +36,7 @@
     "apache-arrow": "18.1.0",
     "better-sqlite3": "^12.11.1",
     "chromadb": "3.4.3",
+    "diff": "9.0.0",
     "fuzzysort": "^3.1.0",
     "ignore": "7.0.5",
     "lru-cache": "^11.0.0",
@@ -57,7 +58,7 @@
     "copy-resources": "node -e \"require('node:fs').cpSync('resources','lib/resources',{recursive:true,force:true})\"",
     "watch": "tsc -b -w",
     "clean": "tsc -b --clean",
-    "lint": "npx --yes @biomejs/biome@2.3.13 check src/common/sweep src/node/sweep src/browser/sweep src/browser/nes-render test/nes-context-sources.test.ts test/nes-prompt.test.ts test/nes-response-parser.test.ts test/llama-nes-client.test.ts test/nes-live.integration.test.ts test/battlefield.integration.test.ts",
+    "lint": "npx --yes @biomejs/biome@2.3.13 check src/common/sweep src/common/zeta21 src/node/sweep src/node/zeta21 src/browser/sweep src/browser/zeta21 src/browser/nes-render test/nes-context-sources.test.ts test/nes-prompt.test.ts test/nes-response-parser.test.ts test/llama-nes-client.test.ts test/nes-live.integration.test.ts test/battlefield.integration.test.ts test/zeta-prompt.test.ts test/zeta-response-parser.test.ts test/zeta-markers.test.ts test/zeta-excerpt.test.ts test/zeta-udiff.test.ts test/zeta-related-composite.test.ts test/zeta-channel-composite.test.ts test/zeta-live.integration.test.ts test/zeta-battlefield.integration.test.ts",
     "test": "tsc -p test/tsconfig.json && node --test lib-test/test/*.test.js"
   }
 }

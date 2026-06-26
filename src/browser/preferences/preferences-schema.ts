@@ -6,6 +6,8 @@ import { DEFAULT_DIAGNOSTICS_GATE_CONFIG, NesConfig } from '../../common/nes-typ
 import { EmbedModelId, FimModelId, GenerationMode, NesModelId, VectorDbId } from '../../common/model-types';
 import { SweepProfileId, getSweepProfile, sweepProfileIdForModel, sweepRequestModelName } from '../../common/sweep/profiles';
 import { DEFAULT_SWEEP_FUZZY_CONFIG, DEFAULT_SWEEP_GRAPH_CONFIG, DEFAULT_SWEEP_RERANK_CONFIG } from '../../common/sweep/types';
+import type { ZetaConfig } from '../../common/zeta21/types';
+import { ZETA_PROFILE, zetaRequestModelName } from '../../common/zeta21/profiles';
 
 /** Схема настроек smart-completions для FIM/NES, coordination mode и embedding-инфраструктуры. */
 export const SMART_COMPLETIONS_PREFERENCE_SCHEMA: PreferenceSchema = {
@@ -341,6 +343,38 @@ export function readNesConfig(preferences: PreferenceService): NesConfig {
             mode: preferences.get<'warn' | 'revert'>('smart-completions.nes.diagnosticsGate.mode', DEFAULT_DIAGNOSTICS_GATE_CONFIG.mode),
             settleTimeoutMs: preferences.get<number>('smart-completions.nes.diagnosticsGate.settleTimeoutMs', DEFAULT_DIAGNOSTICS_GATE_CONFIG.settleTimeoutMs),
             settleMs: preferences.get<number>('smart-completions.nes.diagnosticsGate.settleMs', DEFAULT_DIAGNOSTICS_GATE_CONFIG.settleMs),
+        },
+    };
+}
+
+/** Собрать ZetaConfig из тех же NES preferences, но без Sweep-only полей и с zeta21 model default. */
+export function readZetaConfig(preferences: PreferenceService): ZetaConfig {
+    const configuredContext = preferences.get<number>('smart-completions.nes.contextSize', ZETA_PROFILE.contextTokens);
+    return {
+        llamaUrl: preferences.get<string>('smart-completions.nes.llamaUrl', 'http://127.0.0.1:8010'),
+        requestModelName: zetaRequestModelName(preferences.get<string>('smart-completions.nes.requestModelName', '')),
+        contextSize: Math.max(1024, Math.min(configuredContext, ZETA_PROFILE.contextTokens)),
+        debounceMs: preferences.get<number>('smart-completions.nes.debounceMs', 500),
+        ragEnabled: preferences.get<boolean>('smart-completions.nes.ragEnabled', true),
+        relatedTopN: preferences.get<number>('smart-completions.nes.relatedTopN', 5),
+        queryMaxChars: preferences.get<number>('smart-completions.nes.queryMaxChars', 400),
+        rerank: {
+            enabled: preferences.get<boolean>('smart-completions.nes.rerank.enabled', DEFAULT_SWEEP_RERANK_CONFIG.enabled),
+            llamaUrl: preferences.get<string>('smart-completions.nes.rerank.llamaUrl', DEFAULT_SWEEP_RERANK_CONFIG.llamaUrl),
+            model: preferences.get<string>('smart-completions.nes.rerank.model', DEFAULT_SWEEP_RERANK_CONFIG.model),
+            instruction: preferences.get<string>('smart-completions.nes.rerank.instruction', DEFAULT_SWEEP_RERANK_CONFIG.instruction),
+            candidatePoolN: preferences.get<number>('smart-completions.nes.rerank.candidatePoolN', DEFAULT_SWEEP_RERANK_CONFIG.candidatePoolN),
+            rerankTopN: preferences.get<number>('smart-completions.nes.rerank.rerankTopN', DEFAULT_SWEEP_RERANK_CONFIG.rerankTopN),
+            finalTopN: preferences.get<number>('smart-completions.nes.rerank.finalTopN', DEFAULT_SWEEP_RERANK_CONFIG.finalTopN),
+            ambiguityMargin: preferences.get<number>('smart-completions.nes.rerank.ambiguityMargin', DEFAULT_SWEEP_RERANK_CONFIG.ambiguityMargin),
+            timeoutMs: preferences.get<number>('smart-completions.nes.rerank.timeoutMs', DEFAULT_SWEEP_RERANK_CONFIG.timeoutMs),
+            maxDocChars: preferences.get<number>('smart-completions.nes.rerank.maxDocChars', DEFAULT_SWEEP_RERANK_CONFIG.maxDocChars),
+        },
+        graph: {
+            enabled: preferences.get<boolean>('smart-completions.nes.graph.enabled', DEFAULT_SWEEP_GRAPH_CONFIG.enabled),
+        },
+        fuzzy: {
+            enabled: preferences.get<boolean>('smart-completions.nes.fuzzy.enabled', DEFAULT_SWEEP_FUZZY_CONFIG.enabled),
         },
     };
 }

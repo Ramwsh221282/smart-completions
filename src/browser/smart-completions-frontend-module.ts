@@ -3,7 +3,7 @@ import { FrontendApplicationContribution, KeybindingContribution } from '@theia/
 import { CommandContribution } from '@theia/core/lib/common';
 import { PreferenceContribution } from '@theia/core/lib/common/preferences/preference-schema';
 import { SMART_COMPLETIONS_PREFERENCE_SCHEMA } from './preferences/preferences-schema';
-import { bindEmbeddingProxy, bindFimProxy, bindNesProxy, bindSweepGraphProxy } from './proxies';
+import { bindEmbeddingProxy, bindFimProxy, bindNesProxy, bindSweepGraphProxy, bindZetaProxy } from './proxies';
 import { EmbeddingConfigSync } from './embedding/config-sync';
 import { SmartCompletionsStatusBar } from './status-bar/status-bar';
 import { SmartCompletionsCommands } from './commands';
@@ -20,6 +20,19 @@ import { SearchRelatedSource } from './sweep/data-gathering-layer/sources/search
 import { SymbolSource } from './sweep/data-gathering-layer/sources/symbol-source';
 import { WorkspaceFiles } from './sweep/data-gathering-layer/sources/workspace-files';
 import { DiagnosticsDeltaVerifier } from './sweep/quality/diagnostics-delta-verifier';
+import { SweepController } from './sweep/trigger-layer/sweep-controller';
+import { ZetaContextCollector } from './zeta21/data-gathering-layer/zeta-context-collector';
+import { ZetaEditHistoryRecorder } from './zeta21/data-gathering-layer/zeta-edit-history-recorder';
+import { DefinitionRelatedSource } from './zeta21/data-gathering-layer/sources/definition-source';
+import { HierarchyRelatedSource as ZetaHierarchyRelatedSource } from './zeta21/data-gathering-layer/sources/hierarchy-source';
+import { RecentFilesRelatedSource } from './zeta21/data-gathering-layer/sources/recent-files-source';
+import { ZetaRelatedSource } from './zeta21/data-gathering-layer/sources/related-source';
+import { ScmChangedFilesSource as ZetaScmChangedFilesSource } from './zeta21/data-gathering-layer/sources/scm-source';
+import { SearchRelatedSource as ZetaSearchRelatedSource } from './zeta21/data-gathering-layer/sources/search-source';
+import { SymbolSource as ZetaSymbolSource } from './zeta21/data-gathering-layer/sources/symbol-source';
+import { WorkspaceFiles as ZetaWorkspaceFiles } from './zeta21/data-gathering-layer/sources/workspace-files';
+import { ZetaRequestBuilder } from './zeta21/data-formatting-layer/zeta-request-builder';
+import { ZetaController } from './zeta21/trigger-layer/zeta-controller';
 
 /**
  * Frontend DI-модуль smart-completions.
@@ -30,11 +43,14 @@ export default new ContainerModule(bind => {
 
     bindFimProxy(bind);
     bindNesProxy(bind);
+    bindZetaProxy(bind);
     bindEmbeddingProxy(bind);
     bindSweepGraphProxy(bind);
 
     bind(SweepEditHistoryRecorder).toSelf().inSingletonScope();
     bind(FrontendApplicationContribution).toService(SweepEditHistoryRecorder);
+    bind(ZetaEditHistoryRecorder).toSelf().inSingletonScope();
+    bind(FrontendApplicationContribution).toService(ZetaEditHistoryRecorder);
     bind(SweepGraphLiveRecorder).toSelf().inSingletonScope();
     bind(FrontendApplicationContribution).toService(SweepGraphLiveRecorder);
 
@@ -51,8 +67,25 @@ export default new ContainerModule(bind => {
     bind(RelatedSource).toService(ScmChangedFilesSource);
     bind(SweepContextCollector).toSelf().inSingletonScope();
 
+    bind(ZetaWorkspaceFiles).toSelf().inSingletonScope();
+    bind(ZetaSymbolSource).toSelf().inSingletonScope();
+    bind(DefinitionRelatedSource).toSelf().inSingletonScope();
+    bind(ZetaRelatedSource).toService(DefinitionRelatedSource);
+    bind(ZetaHierarchyRelatedSource).toSelf().inSingletonScope();
+    bind(ZetaRelatedSource).toService(ZetaHierarchyRelatedSource);
+    bind(ZetaSearchRelatedSource).toSelf().inSingletonScope();
+    bind(ZetaRelatedSource).toService(ZetaSearchRelatedSource);
+    bind(ZetaScmChangedFilesSource).toSelf().inSingletonScope();
+    bind(ZetaRelatedSource).toService(ZetaScmChangedFilesSource);
+    bind(RecentFilesRelatedSource).toSelf().inSingletonScope();
+    bind(ZetaRelatedSource).toService(RecentFilesRelatedSource);
+    bind(ZetaContextCollector).toSelf().inSingletonScope();
+    bind(ZetaRequestBuilder).toSelf().inSingletonScope();
+
     bind(NesViewZoneRenderer).toSelf().inSingletonScope();
     bind(DiagnosticsDeltaVerifier).toSelf().inSingletonScope();
+    bind(SweepController).toSelf().inSingletonScope();
+    bind(ZetaController).toSelf().inSingletonScope();
     bind(NesController).toSelf().inSingletonScope();
     bind(FrontendApplicationContribution).toService(NesController);
 
