@@ -1,0 +1,7 @@
+<|repo_name|>repo
+<|file_sep|>src/worse.ts
+export const worse = 1;
+<|file_sep|>src/best.ts
+export const best = 2;
+<|file_sep|>src/current.ts
+<|fim_prefix|>const value = <|fim_suffix|>;<|fim_middle|>

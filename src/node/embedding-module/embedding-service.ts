@@ -36,6 +36,8 @@ export interface EmbeddingServiceDeps {
     /** Фабрики для подмены в тестах. */
     createEmbedClient?: (config: EmbeddingConfig) => EmbedClient;
     createStore?: (config: EmbeddingConfig, storageDir: string) => VectorStore;
+    /** Трансформ документа перед эмбеддингом нужен асимметричным моделям FIM retrieval. */
+    transformDocumentText?: (text: string) => string;
 }
 
 export interface EmbeddingServiceCallbacks {
@@ -83,7 +85,7 @@ export class EmbeddingService {
         this.retriever = new HybridRetriever(this.store, this.bm25, this.embed);
         this.indexer = new RepoIndexer(
             roots,
-            { chunker: this.chunker, embed: this.embed, store: this.store, bm25: this.bm25 },
+            { chunker: this.chunker, embed: this.embed, store: this.store, bm25: this.bm25, transformDocumentText: this.deps.transformDocumentText },
             new IndexPersistence(path.join(workspaceDir, 'index-meta.json')),
             config.embedModel,
             {
@@ -114,11 +116,11 @@ export class EmbeddingService {
     }
 
     /** Гибридный retrieval для FIM/NES. queryText = хвост префикса. */
-    async retrieve(queryText: string, topN: number, signal?: AbortSignal): Promise<Neighbor[]> {
+    async retrieve(queryText: string, topN: number, signal?: AbortSignal, vectorQueryText?: string): Promise<Neighbor[]> {
         if (!this.retriever) {
             return [];
         }
-        return this.retriever.retrieve({ queryText, topN, signal });
+        return this.retriever.retrieve({ queryText, vectorQueryText, topN, signal });
     }
 
     async testConnection(target: ConnTarget): Promise<TestResult> {

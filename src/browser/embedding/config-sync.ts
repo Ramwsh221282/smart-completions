@@ -5,8 +5,8 @@ import { WorkspaceService } from '@theia/workspace/lib/browser';
 import { FileService } from '@theia/filesystem/lib/browser/file-service';
 import { FileChangesEvent } from '@theia/filesystem/lib/common/files';
 import * as monaco from '@theia/monaco-editor-core';
-import { EmbeddingIndexService, SweepGraphService } from '../../common/protocol';
-import { readEmbeddingConfig, readNesConfig } from '../preferences/preferences-schema';
+import { EmbeddingIndexService, FimBackendService, SweepGraphService } from '../../common/protocol';
+import { readEmbeddingConfig, readFimConfig, readNesConfig } from '../preferences/preferences-schema';
 
 /**
  * Синхронизация настроек/корней воркспейса с backend embedding-сервисом
@@ -15,6 +15,7 @@ import { readEmbeddingConfig, readNesConfig } from '../preferences/preferences-s
 @injectable()
 export class EmbeddingConfigSync implements FrontendApplicationContribution {
     @inject(EmbeddingIndexService) private readonly indexService!: EmbeddingIndexService;
+    @inject(FimBackendService) private readonly fimService!: FimBackendService;
     @inject(SweepGraphService) private readonly sweepGraph!: SweepGraphService;
     @inject(PreferenceService) private readonly preferences!: PreferenceService;
     @inject(WorkspaceService) private readonly workspace!: WorkspaceService;
@@ -33,10 +34,12 @@ export class EmbeddingConfigSync implements FrontendApplicationContribution {
 
     private async push(): Promise<void> {
         const config = readEmbeddingConfig(this.preferences);
+        const fimConfig = readFimConfig(this.preferences);
         const nesConfig = readNesConfig(this.preferences);
         const roots = this.workspace.tryGetRoots().map(stat => stat.resource.toString());
         try {
             await this.indexService.configure(config, roots);
+            await this.fimService.configure(fimConfig, roots);
             await this.sweepGraph.configure(roots, this.isSweepGraphEnabled(nesConfig));
         } catch {
             /* backend ещё не готов — повтор на следующем изменении */
@@ -44,12 +47,16 @@ export class EmbeddingConfigSync implements FrontendApplicationContribution {
     }
 
     private onFilesChanged(event: FileChangesEvent): void {
-        if (!this.preferences.get<boolean>('smart-completions.embedding.indexOnSave', true)) {
-            return;
-        }
+        const embeddingOnSave = this.preferences.get<boolean>('smart-completions.embedding.indexOnSave', true);
+        const fimOnSave = readFimConfig(this.preferences).embedding.indexOnSave;
         for (const change of event.changes) {
             const uri = change.resource.toString();
-            void this.indexService.reindexFile(uri).catch(() => undefined);
+            if (embeddingOnSave) {
+                void this.indexService.reindexFile(uri).catch(() => undefined);
+            }
+            if (fimOnSave) {
+                void this.fimService.reindexFile(uri).catch(() => undefined);
+            }
             if (!this.isOpenModel(uri) && this.isSweepGraphEnabled(readNesConfig(this.preferences))) {
                 void this.sweepGraph.reindexFile(uri).catch(() => undefined);
             }
@@ -58,6 +65,7 @@ export class EmbeddingConfigSync implements FrontendApplicationContribution {
 
     private shouldPush(preferenceName: string): boolean {
         return preferenceName.startsWith('smart-completions.embedding')
+            || preferenceName.startsWith('smart-completions.fim')
             || preferenceName.startsWith('smart-completions.nes.graph')
             || preferenceName.startsWith('smart-completions.nes.fuzzy')
             || preferenceName === 'smart-completions.nes.modelId';

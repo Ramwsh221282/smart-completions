@@ -1,7 +1,9 @@
-import { FileMode } from './mode-types';
-import { RecentEdit } from './edit-history-types';
+import type { EmbeddingConfig } from './embedding-types';
 import { DiagnosticDTO } from './editor-dto';
+import { RecentEdit } from './edit-history-types';
+import type { SweepFuzzyConfig, SweepGraphConfig, SweepRerankConfig } from './sweep/types';
 import { FimModelId, GenerationMode } from './model-types';
+import { FileMode } from './mode-types';
 
 /** Какие источники контекста включены (только по доступным слотам модели). */
 export interface FimContextSources {
@@ -11,6 +13,20 @@ export interface FimContextSources {
     repoContext: boolean;
     /** Диагностики (если у модели есть подходящий слот). */
     diagnostics: boolean;
+}
+
+/** Явно собранный related-файл для repo-level FIM prompt, например LSP definition рядом с курсором. */
+export interface FimRelatedFile {
+    filePath: string;
+    content: string;
+    score?: number;
+}
+
+/** Конфиг retrieval-пайплайна FIM: graph/fuzzy/rerank живут рядом с FIM, хотя используют shared реализации. */
+export interface FimRetrievalConfig {
+    rerank: SweepRerankConfig;
+    graph: SweepGraphConfig;
+    fuzzy: SweepFuzzyConfig;
 }
 
 /** Настройки активной FIM-модели (push'ом через configure()). */
@@ -28,6 +44,12 @@ export interface FimConfig {
     temperature: number;
     /** Тумблер RAG на эту модель. */
     ragEnabled: boolean;
+    /** Активный профиль FIM-эмбеддера; меняет только отдельное FIM-пространство индекса. */
+    fimEmbedderId: string;
+    /** Конфиг отдельного FIM embedding-space; значения читаются из embedding preferences. */
+    embedding: EmbeddingConfig;
+    /** Конфиг retrieval orchestration для FIM. */
+    retrieval: FimRetrievalConfig;
     /** Включённые источники контекста. */
     contextSources: FimContextSources;
 }
@@ -41,6 +63,7 @@ export interface FimRequest {
     prefix: string;
     suffix: string;
     generationMode: GenerationMode;
+    relatedFiles?: FimRelatedFile[];
     recentEdits?: RecentEdit[];
     diagnostics?: DiagnosticDTO[];
 }

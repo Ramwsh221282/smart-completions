@@ -9,6 +9,15 @@ import { DEFAULT_SWEEP_FUZZY_CONFIG, DEFAULT_SWEEP_GRAPH_CONFIG, DEFAULT_SWEEP_R
 import type { ZetaConfig } from '../../common/zeta21/types';
 import { ZETA_PROFILE, zetaRequestModelName } from '../../common/zeta21/profiles';
 
+const DEFAULT_FIM_RERANK_CONFIG = {
+    ...DEFAULT_SWEEP_RERANK_CONFIG,
+    enabled: true,
+    model: 'Qwen3-Reranker-0.6B',
+    candidatePoolN: 16,
+    rerankTopN: 16,
+    finalTopN: 5,
+};
+
 /** Схема настроек smart-completions для FIM/NES, coordination mode и embedding-инфраструктуры. */
 export const SMART_COMPLETIONS_PREFERENCE_SCHEMA: PreferenceSchema = {
     properties: {
@@ -62,9 +71,75 @@ export const SMART_COMPLETIONS_PREFERENCE_SCHEMA: PreferenceSchema = {
             default: true,
             description: 'Include retrieved repository chunks when the active FIM model has repo slots.',
         },
+        'smart-completions.fim.fimEmbedderId': {
+            type: 'string',
+            enum: ['jina-code', 'granite', 'qwen3-0.6b', 'nomic-code'],
+            default: 'jina-code',
+            description: 'Embedding profile used by the isolated FIM retrieval index.',
+        },
+        'smart-completions.fim.retrieval.rerank.enabled': {
+            type: 'boolean',
+            default: true,
+            description: 'Always-on reranking for FIM retrieval candidates.',
+        },
+        'smart-completions.fim.retrieval.rerank.llamaUrl': {
+            type: 'string',
+            default: DEFAULT_FIM_RERANK_CONFIG.llamaUrl,
+            description: 'llama.cpp base URL for the FIM reranker server.',
+        },
+        'smart-completions.fim.retrieval.rerank.model': {
+            type: 'string',
+            default: DEFAULT_FIM_RERANK_CONFIG.model,
+            description: 'Model alias sent to llama.cpp /rerank for FIM retrieval.',
+        },
+        'smart-completions.fim.retrieval.rerank.instruction': {
+            type: 'string',
+            default: DEFAULT_FIM_RERANK_CONFIG.instruction,
+            description: 'Instruction prepended to the FIM rerank query.',
+        },
+        'smart-completions.fim.retrieval.rerank.candidatePoolN': {
+            type: 'number',
+            default: DEFAULT_FIM_RERANK_CONFIG.candidatePoolN,
+            description: 'How many candidates to gather before FIM reranking.',
+        },
+        'smart-completions.fim.retrieval.rerank.rerankTopN': {
+            type: 'number',
+            default: DEFAULT_FIM_RERANK_CONFIG.rerankTopN,
+            description: 'How many RRF candidates enter the FIM reranker stage.',
+        },
+        'smart-completions.fim.retrieval.rerank.finalTopN': {
+            type: 'number',
+            default: DEFAULT_FIM_RERANK_CONFIG.finalTopN,
+            description: 'Maximum number of reranked FIM neighbors kept for prompt assembly.',
+        },
+        'smart-completions.fim.retrieval.rerank.ambiguityMargin': {
+            type: 'number',
+            default: DEFAULT_FIM_RERANK_CONFIG.ambiguityMargin,
+            description: 'Retained for config parity; FIM rerank runs unconditionally when enabled.',
+        },
+        'smart-completions.fim.retrieval.rerank.timeoutMs': {
+            type: 'number',
+            default: DEFAULT_FIM_RERANK_CONFIG.timeoutMs,
+            description: 'Timeout for the FIM reranker call before fail-open fallback.',
+        },
+        'smart-completions.fim.retrieval.rerank.maxDocChars': {
+            type: 'number',
+            default: DEFAULT_FIM_RERANK_CONFIG.maxDocChars,
+            description: 'Maximum characters per FIM candidate document sent to the reranker.',
+        },
+        'smart-completions.fim.retrieval.graph.enabled': {
+            type: 'boolean',
+            default: true,
+            description: 'Enable the shared structural graph retrieval channel for FIM.',
+        },
+        'smart-completions.fim.retrieval.fuzzy.enabled': {
+            type: 'boolean',
+            default: true,
+            description: 'Enable the shared fuzzy symbol retrieval channel for FIM.',
+        },
         'smart-completions.fim.contextSources.recentEdits': {
             type: 'boolean',
-            default: false,
+            default: true,
             description: 'Allow recent edits as FIM context when a model template exposes a compatible slot.',
         },
         'smart-completions.fim.contextSources.repoContext': {
@@ -282,6 +357,7 @@ const FIM_CONTEXT_MAX: Record<FimModelId, number> = {
 export function readFimConfig(preferences: PreferenceService): FimConfig {
     const modelId = preferences.get<FimModelId>('smart-completions.fim.modelId', 'qwen2.5-coder');
     const configuredContextSize = preferences.get<number>('smart-completions.fim.contextSize', 0);
+    const embedding = readEmbeddingConfig(preferences);
     return {
         modelId,
         llamaUrl: preferences.get<string>('smart-completions.fim.llamaUrl', 'http://127.0.0.1:8020/v1'),
@@ -290,8 +366,30 @@ export function readFimConfig(preferences: PreferenceService): FimConfig {
         generationMode: preferences.get<GenerationMode>('smart-completions.fim.generationMode', 'multiline'),
         temperature: preferences.get<number>('smart-completions.fim.temperature', 0.05),
         ragEnabled: preferences.get<boolean>('smart-completions.fim.ragEnabled', true),
+        fimEmbedderId: preferences.get<string>('smart-completions.fim.fimEmbedderId', 'jina-code'),
+        embedding,
+        retrieval: {
+            rerank: {
+                enabled: preferences.get<boolean>('smart-completions.fim.retrieval.rerank.enabled', DEFAULT_FIM_RERANK_CONFIG.enabled),
+                llamaUrl: preferences.get<string>('smart-completions.fim.retrieval.rerank.llamaUrl', DEFAULT_FIM_RERANK_CONFIG.llamaUrl),
+                model: preferences.get<string>('smart-completions.fim.retrieval.rerank.model', DEFAULT_FIM_RERANK_CONFIG.model),
+                instruction: preferences.get<string>('smart-completions.fim.retrieval.rerank.instruction', DEFAULT_FIM_RERANK_CONFIG.instruction),
+                candidatePoolN: preferences.get<number>('smart-completions.fim.retrieval.rerank.candidatePoolN', DEFAULT_FIM_RERANK_CONFIG.candidatePoolN),
+                rerankTopN: preferences.get<number>('smart-completions.fim.retrieval.rerank.rerankTopN', DEFAULT_FIM_RERANK_CONFIG.rerankTopN),
+                finalTopN: preferences.get<number>('smart-completions.fim.retrieval.rerank.finalTopN', DEFAULT_FIM_RERANK_CONFIG.finalTopN),
+                ambiguityMargin: preferences.get<number>('smart-completions.fim.retrieval.rerank.ambiguityMargin', DEFAULT_FIM_RERANK_CONFIG.ambiguityMargin),
+                timeoutMs: preferences.get<number>('smart-completions.fim.retrieval.rerank.timeoutMs', DEFAULT_FIM_RERANK_CONFIG.timeoutMs),
+                maxDocChars: preferences.get<number>('smart-completions.fim.retrieval.rerank.maxDocChars', DEFAULT_FIM_RERANK_CONFIG.maxDocChars),
+            },
+            graph: {
+                enabled: preferences.get<boolean>('smart-completions.fim.retrieval.graph.enabled', DEFAULT_SWEEP_GRAPH_CONFIG.enabled),
+            },
+            fuzzy: {
+                enabled: preferences.get<boolean>('smart-completions.fim.retrieval.fuzzy.enabled', DEFAULT_SWEEP_FUZZY_CONFIG.enabled),
+            },
+        },
         contextSources: {
-            recentEdits: preferences.get<boolean>('smart-completions.fim.contextSources.recentEdits', false),
+            recentEdits: preferences.get<boolean>('smart-completions.fim.contextSources.recentEdits', true),
             repoContext: preferences.get<boolean>('smart-completions.fim.contextSources.repoContext', true),
             diagnostics: preferences.get<boolean>('smart-completions.fim.contextSources.diagnostics', false),
         },

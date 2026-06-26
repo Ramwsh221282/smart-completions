@@ -6,6 +6,7 @@ import * as monaco from '@theia/monaco-editor-core';
 import { FimConfig } from '../../common/fim-types';
 import { CoordinationMode } from '../../common/model-types';
 import { FimBackendService } from '../../common/protocol';
+import { FimContextCollector } from './data-gathering-layer/fim-context-collector';
 import { NesViewZoneRenderer } from '../nes-render/nes-view-zone-renderer';
 import { readFimConfig } from '../preferences/preferences-schema';
 import { fileModeForLanguage } from '../shared/file-mode';
@@ -13,6 +14,7 @@ import { fileModeForLanguage } from '../shared/file-mode';
 @injectable()
 export class FimInlineProvider implements FrontendApplicationContribution, monaco.languages.InlineCompletionsProvider, Disposable {
     @inject(FimBackendService) private readonly fim!: FimBackendService;
+    @inject(FimContextCollector) private readonly collector!: FimContextCollector;
     @inject(PreferenceService) private readonly preferences!: PreferenceService;
     @inject(NesViewZoneRenderer) private readonly nesRenderer!: NesViewZoneRenderer;
 
@@ -52,6 +54,14 @@ export class FimInlineProvider implements FrontendApplicationContribution, monac
         const source = new CancellationTokenSource();
         const listener = token.onCancellationRequested(() => source.cancel());
         try {
+            const fimContext = shouldCollectFimContext(this.config)
+                ? await this.collector.collect({
+                    model,
+                    position,
+                    collectRecentEdits: this.config.contextSources.recentEdits,
+                    collectRelatedFiles: this.config.contextSources.repoContext,
+                })
+                : { recentEdits: [], relatedFiles: [] };
             const response = await this.fim.complete({
                 requestId: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
                 uri: model.uri.toString(),
@@ -70,6 +80,8 @@ export class FimInlineProvider implements FrontendApplicationContribution, monac
                     endColumn: model.getLineMaxColumn(model.getLineCount()),
                 }),
                 generationMode: this.config.generationMode,
+                relatedFiles: fimContext.relatedFiles,
+                recentEdits: fimContext.recentEdits,
             }, source.token);
             if (token.isCancellationRequested || !response.text) {
                 return undefined;
@@ -98,12 +110,11 @@ export class FimInlineProvider implements FrontendApplicationContribution, monac
         this.enabled = this.preferences.get<boolean>('smart-completions.fim.enabled', true);
         this.coordinationMode = this.preferences.get<CoordinationMode>('smart-completions.coordinationMode', 'exclusive-priority');
         this.debounceDelayMs = this.config.debounceMs;
-        try {
-            await this.fim.configure(this.config);
-        } catch {
-            /* backend повторно получит конфиг при следующем изменении preferences */
-        }
     }
+}
+
+function shouldCollectFimContext(config: FimConfig): boolean {
+    return config.contextSources.recentEdits || config.contextSources.repoContext;
 }
 
 function shouldTrigger(model: monaco.editor.ITextModel, position: monaco.Position, fileMode: 'code' | 'prose'): boolean {

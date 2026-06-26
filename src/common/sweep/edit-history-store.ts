@@ -179,7 +179,7 @@ export class EditHistoryStore {
             return;
         }
         this.preEditText.set(uri, before);
-        this.history.push({ uri, unifiedDiff, timestamp: Date.now() });
+        this.history.push({ uri, before, after, unifiedDiff, timestamp: Date.now() });
         const excess = this.history.length - MAX_HISTORY;
         if (excess > 0) {
             this.history.splice(0, excess);

@@ -22,7 +22,9 @@ export const ZETA_SERVICE_PATH = '/services/zeta';
 export const FimBackendService = Symbol('FimBackendService');
 export interface FimBackendService {
     complete(request: FimRequest, token?: CancellationToken): Promise<FimResponse>;
-    configure(config: FimConfig): Promise<void>;
+    configure(config: FimConfig, workspaceRoots?: string[]): Promise<void>;
+    reindexFile(uri: string): Promise<void>;
+    rebuildIndex(): Promise<void>;
 }
 
 /** NES-инференс (backend). */

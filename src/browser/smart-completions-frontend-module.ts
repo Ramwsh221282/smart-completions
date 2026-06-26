@@ -7,6 +7,10 @@ import { bindEmbeddingProxy, bindFimProxy, bindNesProxy, bindSweepGraphProxy, bi
 import { EmbeddingConfigSync } from './embedding/config-sync';
 import { SmartCompletionsStatusBar } from './status-bar/status-bar';
 import { SmartCompletionsCommands } from './commands';
+import { FimContextCollector } from './fim-module/data-gathering-layer/fim-context-collector';
+import { FimEditHistoryRecorder } from './fim-module/data-gathering-layer/fim-edit-history-recorder';
+import { FimDefinitionRelatedSource } from './fim-module/data-gathering-layer/sources/definition-source';
+import { FimWorkspaceFiles } from './fim-module/data-gathering-layer/sources/workspace-files';
 import { FimInlineProvider } from './fim-module/fim-inline-provider';
 import { NesController } from './nes-module/nes-controller';
 import { NesViewZoneRenderer } from './nes-render/nes-view-zone-renderer';
@@ -53,6 +57,12 @@ export default new ContainerModule(bind => {
     bind(FrontendApplicationContribution).toService(ZetaEditHistoryRecorder);
     bind(SweepGraphLiveRecorder).toSelf().inSingletonScope();
     bind(FrontendApplicationContribution).toService(SweepGraphLiveRecorder);
+
+    bind(FimWorkspaceFiles).toSelf().inSingletonScope();
+    bind(FimDefinitionRelatedSource).toSelf().inSingletonScope();
+    bind(FimEditHistoryRecorder).toSelf().inSingletonScope();
+    bind(FrontendApplicationContribution).toService(FimEditHistoryRecorder);
+    bind(FimContextCollector).toSelf().inSingletonScope();
 
     bind(FimInlineProvider).toSelf().inSingletonScope();
     bind(FrontendApplicationContribution).toService(FimInlineProvider);

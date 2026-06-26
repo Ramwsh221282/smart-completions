@@ -18,6 +18,7 @@ export interface IndexerServices {
     embed: EmbedClient;
     store: VectorStore;
     bm25: Bm25Index;
+    transformDocumentText?: (text: string) => string;
 }
 
 export interface IndexerCallbacks {
@@ -182,7 +183,7 @@ export class RepoIndexer {
 
         await this.removeFileChunks(rel);
         if (chunks.length > 0) {
-            const vectors = await this.embedAll(chunks.map(c => c.text), signal);
+            const vectors = await this.embedAll(chunks.map(c => this.services.transformDocumentText ? this.services.transformDocumentText(c.text) : c.text), signal);
             const records: ChunkRecord[] = chunks.map((c, i) => ({
                 id: chunkId(c.filePath, c.startLine, c.endLine),
                 filePath: c.filePath,

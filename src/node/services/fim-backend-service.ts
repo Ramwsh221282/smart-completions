@@ -2,14 +2,17 @@ import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { injectable, inject } from '@theia/core/shared/inversify';
 import { CancellationToken, Disposable } from '@theia/core/lib/common';
+import { buildFimRetrievalQuery, extractFimSignals } from '../../common/fim/fim-retrieval-queries';
 import { FimBackendService } from '../../common/protocol';
 import { FimConfig, FimRequest, FimResponse } from '../../common/fim-types';
+import { dedupeContextFiles } from '../../common/sweep/dedup-context';
 import { buildFimPrompt } from '../fim-module/context-formation/builder';
+import { FimEmbeddingIndexService } from '../fim-module/embedding/fim-embedding-index-service';
 import { getFimModelSpec } from '../fim-module/context-formation/model-spec';
 import { LlamaFimClient } from '../fim-module/model-call/llama-fim-client';
 import { postprocessFimCompletion } from '../fim-module/model-call/postprocess';
+import { FimRetrievalOrchestrator } from '../fim-module/retrieval/fim-retrieval-orchestrator';
 import { normalizeCrlf } from '../util/crlf';
-import { EmbeddingIndexServiceImpl } from './embedding-index-service';
 
 const DEFAULT_FIM_CONFIG: FimConfig = {
     modelId: 'qwen2.5-coder',
@@ -19,8 +22,36 @@ const DEFAULT_FIM_CONFIG: FimConfig = {
     generationMode: 'multiline',
     temperature: 0.05,
     ragEnabled: true,
+    fimEmbedderId: 'jina-code',
+    embedding: {
+        embedModel: 'jina-code-embeddings-0.5b',
+        llamaUrl: 'http://127.0.0.1:8040/v1',
+        vectorDb: 'lancedb',
+        chromaUrl: 'http://127.0.0.1:8000',
+        indexOnSave: true,
+        indexOnOpen: true,
+        chunkSize: 40,
+        topN: 4,
+        prefixTailChars: 400,
+    },
+    retrieval: {
+        rerank: {
+            enabled: true,
+            llamaUrl: 'http://127.0.0.1:8030/v1',
+            model: 'Qwen3-Reranker-0.6B',
+            instruction: 'Instruct: Given the current incomplete code prefix and recent edits, judge whether the repository snippet is useful for predicting the missing code at the cursor.',
+            candidatePoolN: 16,
+            rerankTopN: 16,
+            finalTopN: 5,
+            ambiguityMargin: 0.002,
+            timeoutMs: 1500,
+            maxDocChars: 2000,
+        },
+        graph: { enabled: true },
+        fuzzy: { enabled: true },
+    },
     contextSources: {
-        recentEdits: false,
+        recentEdits: true,
         repoContext: true,
         diagnostics: false,
     },
@@ -28,17 +59,34 @@ const DEFAULT_FIM_CONFIG: FimConfig = {
 
 @injectable()
 export class FimBackendServiceImpl implements FimBackendService {
-    @inject(EmbeddingIndexServiceImpl) private readonly embedding!: EmbeddingIndexServiceImpl;
+    @inject(FimEmbeddingIndexService) private readonly fimIndex!: FimEmbeddingIndexService;
+    @inject(FimRetrievalOrchestrator) private readonly retrieval!: FimRetrievalOrchestrator;
 
     private config = DEFAULT_FIM_CONFIG;
+    private workspaceRoots: string[] = [];
     private readonly client = new LlamaFimClient();
 
-    async configure(config: FimConfig): Promise<void> {
+    async configure(config: FimConfig, workspaceRoots?: string[]): Promise<void> {
         this.config = {
             ...config,
             contextSize: Math.max(1024, config.contextSize),
             temperature: Math.min(0.1, Math.max(0, config.temperature)),
         };
+        if (workspaceRoots) {
+            this.workspaceRoots = workspaceRoots.map(uriToFsPath);
+        }
+        await this.retrieval.configure(this.config.retrieval.rerank);
+        if (this.workspaceRoots.length > 0) {
+            await this.fimIndex.configure(this.config.embedding, this.workspaceRoots, this.config.fimEmbedderId);
+        }
+    }
+
+    async reindexFile(uri: string): Promise<void> {
+        await this.fimIndex.reindexFile(uri);
+    }
+
+    async rebuildIndex(): Promise<void> {
+        await this.fimIndex.rebuild();
     }
 
     async complete(request: FimRequest, token?: CancellationToken): Promise<FimResponse> {
@@ -51,9 +99,15 @@ export class FimBackendServiceImpl implements FimBackendService {
             const generationMode = request.generationMode ?? this.config.generationMode;
             const prefix = normalizeCrlf(request.prefix);
             const suffix = normalizeCrlf(request.suffix);
+            const filePath = this.filePathForUri(request.uri);
             const neighbors = spec.supportsRepoContext && this.config.ragEnabled && this.config.contextSources.repoContext
-                ? await this.retrieveNeighbors(prefix, abort.signal)
+                ? await this.retrieveNeighbors(prefix, request, abort.signal)
                 : [];
+            const deduped = dedupeContextFiles({
+                currentFilePath: filePath,
+                neighbors,
+                relatedFiles: request.relatedFiles ?? [],
+            });
             const prompt = buildFimPrompt({
                 modelId: this.config.modelId,
                 fileMode: request.fileMode,
@@ -62,8 +116,10 @@ export class FimBackendServiceImpl implements FimBackendService {
                 generationMode,
                 contextSize: this.config.contextSize,
                 repoName: this.repoNameForUri(request.uri),
-                filePath: this.filePathForUri(request.uri),
-                neighbors,
+                filePath,
+                neighbors: deduped.neighbors,
+                relatedFiles: deduped.relatedFiles,
+                recentEdits: this.config.contextSources.recentEdits ? request.recentEdits ?? [] : [],
             });
             const rawText = await this.client.complete({
                 baseUrl: this.config.llamaUrl,
@@ -88,13 +144,26 @@ export class FimBackendServiceImpl implements FimBackendService {
         }
     }
 
-    private async retrieveNeighbors(prefix: string, signal?: AbortSignal) {
-        const options = this.embedding.getRetrievalOptions();
-        const query = prefix.slice(-options.prefixTailChars);
+    private async retrieveNeighbors(prefix: string, request: FimRequest, signal?: AbortSignal) {
+        const options = this.fimIndex.getRetrievalOptions();
+        const recentEdits = request.recentEdits ?? [];
+        const query = buildFimRetrievalQuery({
+            prefix,
+            recentEdits,
+            prefixTailChars: options.prefixTailChars,
+        });
         if (!query.trim()) {
             return [];
         }
-        return this.embedding.retrieve(query, options.topN, signal);
+        const signals = extractFimSignals(prefix.slice(-options.prefixTailChars), recentEdits);
+        return this.retrieval.retrieve({
+            query,
+            fileMode: request.fileMode,
+            signals: signals.graph,
+            fuzzySymbols: signals.fuzzySymbols,
+            topN: options.topN,
+            signal,
+        }, this.config.retrieval);
     }
 
     private repoNameForUri(uri: string): string {
@@ -110,7 +179,7 @@ export class FimBackendServiceImpl implements FimBackendService {
 
     private workspaceRootForUri(uri: string): string | undefined {
         const fsPath = uriToFsPath(uri);
-        return this.embedding.workspaceRoots.find(root => fsPath === root || fsPath.startsWith(root + path.sep));
+        return this.fimIndex.workspaceRoots.find(root => fsPath === root || fsPath.startsWith(root + path.sep));
     }
 }
 

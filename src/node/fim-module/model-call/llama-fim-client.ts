@@ -24,6 +24,7 @@ export class LlamaFimClient {
             max_tokens: request.maxTokens,
             temperature: request.temperature,
             stop: request.stop,
+            cache_prompt: true,
             stream: false,
         };
         const response = await this.post(request.baseUrl, body, request.signal, true);

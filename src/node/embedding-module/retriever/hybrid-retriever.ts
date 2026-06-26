@@ -37,6 +37,8 @@ export function reciprocalRankFusion(lists: VectorHit[][], topN: number, k = RRF
 export interface RetrieveRequest {
     /** Поисковый запрос = хвост префикса (+ при необходимости текст недавних правок). */
     queryText: string;
+    /** Отдельный текст для векторной ветки нужен FIM-эмбеддерам с instruction-префиксом. */
+    vectorQueryText?: string;
     topN: number;
     signal?: AbortSignal;
 }
@@ -54,7 +56,7 @@ export class HybridRetriever {
     ) {}
 
     async retrieve(request: RetrieveRequest): Promise<Neighbor[]> {
-        const { queryText, topN, signal } = request;
+        const { queryText, vectorQueryText = queryText, topN, signal } = request;
         if (!queryText.trim() || topN <= 0) {
             return [];
         }
@@ -62,7 +64,7 @@ export class HybridRetriever {
 
         let vectorHits: VectorHit[] = [];
         try {
-            const vectors = await this.embed.embed([queryText], signal);
+            const vectors = await this.embed.embed([vectorQueryText], signal);
             if (vectors[0] && !signal?.aborted) {
                 vectorHits = await this.store.vectorSearch(vectors[0], fetchN);
             }

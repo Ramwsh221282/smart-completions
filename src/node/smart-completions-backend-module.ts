@@ -16,6 +16,12 @@ import { EmbeddingIndexServiceImpl } from './services/embedding-index-service';
 import { FimBackendServiceImpl } from './services/fim-backend-service';
 import { NesBackendServiceImpl } from './services/nes-backend-service';
 import { SweepGraphServiceImpl } from './services/sweep-graph-service';
+import { FimEmbeddingIndexService } from './fim-module/embedding/fim-embedding-index-service';
+import { FimFuzzyRetrievalChannel } from './fim-module/retrieval/channels/fim-fuzzy-channel';
+import { FimGraphRetrievalChannel } from './fim-module/retrieval/channels/fim-graph-channel';
+import { FimSemanticRetrievalChannel } from './fim-module/retrieval/channels/fim-semantic-channel';
+import { FimRetrievalChannel } from './fim-module/retrieval/fim-retrieval-channel';
+import { FimRetrievalOrchestrator } from './fim-module/retrieval/fim-retrieval-orchestrator';
 import { FuzzyRetrievalChannel } from './sweep/retrieval/channels/fuzzy-retrieval-channel';
 import { GraphRetrievalChannel } from './sweep/retrieval/channels/graph-retrieval-channel';
 import { SemanticRetrievalChannel } from './sweep/retrieval/channels/semantic-retrieval-channel';
@@ -39,6 +45,14 @@ import { ZetaBackendService } from './zeta21/zeta-backend-service';
 export default new ContainerModule(bind => {
     bind(FimBackendServiceImpl).toSelf().inSingletonScope();
     bind(FimBackendService).toService(FimBackendServiceImpl);
+    bind(FimEmbeddingIndexService).toSelf().inSingletonScope();
+    bind(FimSemanticRetrievalChannel).toSelf().inSingletonScope();
+    bind(FimRetrievalChannel).toService(FimSemanticRetrievalChannel);
+    bind(FimGraphRetrievalChannel).toSelf().inSingletonScope();
+    bind(FimRetrievalChannel).toService(FimGraphRetrievalChannel);
+    bind(FimFuzzyRetrievalChannel).toSelf().inSingletonScope();
+    bind(FimRetrievalChannel).toService(FimFuzzyRetrievalChannel);
+    bind(FimRetrievalOrchestrator).toSelf().inSingletonScope();
 
     bind(NesBackendServiceImpl).toSelf().inSingletonScope();
     bind(NesBackendService).toService(NesBackendServiceImpl);

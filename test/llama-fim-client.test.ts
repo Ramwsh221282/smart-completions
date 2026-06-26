@@ -26,6 +26,7 @@ test('llama FIM client sends raw completions request', async () => {
             max_tokens: 12,
             temperature: 0.05,
             stop: ['stop'],
+            cache_prompt: true,
             stream: false,
         });
     } finally {
