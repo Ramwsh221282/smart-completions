@@ -3,3 +3,4 @@ lib/
 lib-test/
 *.tsbuildinfo
 *.vsix
+graphify-out/
