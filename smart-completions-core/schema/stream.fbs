@@ -1,0 +1,16 @@
+namespace sc;
+
+enum FrameKind : byte { Token, Done, Error, Edit, Progress }
+
+table StreamFrame {
+  request_id:ulong;
+  kind:FrameKind;
+  text:string;
+  edit_range_start_line:int;
+  edit_range_start_col:int;
+  edit_range_end_line:int;
+  edit_range_end_col:int;
+  new_text:string;
+  jump_line:int;
+  jump_col:int;
+}

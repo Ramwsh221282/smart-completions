@@ -1,0 +1,105 @@
+namespace sc;
+
+enum Mode : byte { Fim, Nes }
+enum FileMode : byte { Code, Prose }
+enum DocumentKind : byte { File, Untitled }
+
+table Position {
+  line:int;
+  column:int;
+  offset:uint;
+}
+
+table Range {
+  start_line:int;
+  start_col:int;
+  end_line:int;
+  end_col:int;
+}
+
+table TextChange {
+  range:Range;
+  range_length:uint;
+  inserted_text:string;
+}
+
+table InitialDocumentSnapshot {
+  uri:string;
+  version:int;
+  language_id:string;
+  file_path:string;
+  file_mode:FileMode;
+  kind:DocumentKind;
+  text:string;
+}
+
+table DocumentChange {
+  uri:string;
+  from_version:int;
+  to_version:int;
+  changes:[TextChange];
+}
+
+table OpenBufferSnapshot {
+  uri:string;
+  version:int;
+  language_id:string;
+  file_mode:FileMode;
+  text:string;
+}
+
+table Diagnostic {
+  range:Range;
+  severity:byte;
+  message:string;
+  code:string;
+}
+
+table OutlineItem {
+  name:string;
+  kind:string;
+  range:Range;
+  selection_range:Range;
+}
+
+table RelatedFileHint {
+  path:string;
+  range:Range;
+  source:string;
+  score_hint:float;
+}
+
+table Signals {
+  symbol_at_cursor:string;
+  renamed_symbols:[string];
+  imported_symbols:[string];
+  declared_types:[string];
+  test_names:[string];
+  diagnostic_symbols:[string];
+  fuzzy_symbols:[string];
+  retrieval_signal_hints:[string];
+}
+
+table CompletionRequest {
+  request_id:ulong;
+  mode:Mode;
+  model_id:string;
+  uri:string;
+  version:int;
+  language_id:string;
+  file_mode:FileMode;
+  cursor:Position;
+  editable_region:Range;
+  recent_edit_uris:[string];
+  diagnostics:[Diagnostic];
+  outline:[OutlineItem];
+  related_file_hints:[RelatedFileHint];
+  signals:Signals;
+  config_version:ulong;
+  config_json:string;
+}
+
+table ConfigUpdate {
+  config_version:ulong;
+  config_json:string;
+}

@@ -1,0 +1,34 @@
+include "envelope.fbs";
+
+namespace sc;
+
+enum ClientFrameKind : byte {
+  InitialDocumentSnapshot,
+  DocumentChange,
+  OpenBufferSnapshot,
+  CompletionRequest,
+  Cancel,
+  ConfigUpdate,
+  Shutdown
+}
+
+table Cancel {
+  request_id:ulong;
+}
+
+table Shutdown {
+  reason:string;
+}
+
+table ClientFrame {
+  kind:ClientFrameKind;
+  initial_document:InitialDocumentSnapshot;
+  document_change:DocumentChange;
+  open_buffer:OpenBufferSnapshot;
+  request:CompletionRequest;
+  cancel:Cancel;
+  config_update:ConfigUpdate;
+  shutdown:Shutdown;
+}
+
+root_type ClientFrame;

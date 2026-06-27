@@ -62,6 +62,7 @@ impl GenerationClient {
 
         loop {
             tokio::select! {
+                biased;
                 () = cancel.cancelled() => return Ok(()),
                 maybe_event = events.next() => {
                     let Some(event) = maybe_event else { break };

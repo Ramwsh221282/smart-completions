@@ -9,6 +9,30 @@ pub mod framing;
 pub mod protocol;
 pub mod server;
 
+/// FlatBuffers types generated from `schema/*.fbs` by planus at build time.
+///
+/// This is the target wire encoding; the active transport still uses the
+/// transitional JSON protocol until both sides switch over.
+#[rustfmt::skip]
+#[allow(
+    unsafe_code,
+    missing_docs,
+    unused_imports,
+    unused_qualifications,
+    clippy::all,
+    clippy::pedantic,
+    clippy::nursery,
+    clippy::correctness,
+    clippy::perf,
+    clippy::style,
+    clippy::complexity,
+    clippy::suspicious,
+    clippy::redundant_clone
+)]
+pub mod generated {
+    include!(concat!(env!("OUT_DIR"), "/smart_completions_schema.rs"));
+}
+
 pub use connection::{
     read_client_frame, read_server_frame, write_client_frame, write_server_frame, ConnectionError,
 };
