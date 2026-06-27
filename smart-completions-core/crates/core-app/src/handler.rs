@@ -134,6 +134,8 @@ impl CoreFrameHandler {
             .store
             .prefix_suffix_at(&request.uri, request.version, request.cursor)
             .map_err(|err| err.to_string())?;
+        // Metadata rides through the existing repo-context channel, so the
+        // model sees it now without waiting for a dedicated retrieval stage.
         let neighbors = prompt_metadata_neighbors(request);
 
         let input = FimRenderInput {
@@ -177,6 +179,8 @@ fn to_content_changes(changes: Vec<WireTextChange>) -> Vec<DocumentContentChange
         .collect()
 }
 
+// Synthetic neighbors let the current FIM prompt contract reuse frontend
+// metadata without teaching each model a second metadata-specific format.
 fn prompt_metadata_neighbors(request: &WireCompletionRequest) -> Vec<Neighbor> {
     let mut neighbors = Vec::with_capacity(metadata_neighbor_capacity(request));
 
@@ -213,6 +217,8 @@ fn metadata_neighbor_capacity(request: &WireCompletionRequest) -> usize {
     count
 }
 
+// Related-file hints only carry paths and ranges so far, therefore the prompt
+// gets a compact pseudo-file until Rust owns real file loading.
 fn related_hints_neighbor(request: &WireCompletionRequest) -> Option<Neighbor> {
     if request.related_file_hints.is_empty() {
         return None;
@@ -242,6 +248,8 @@ fn append_related_hint_line(text: &mut String, hint: &WireRelatedFileHint) {
     let _ = writeln!(text, " score={:.2}", hint.score_hint);
 }
 
+// Diagnostics become a pseudo-file so compiler friction reaches the model via
+// the same repo-context path as ordinary retrieved files.
 fn diagnostics_neighbor(request: &WireCompletionRequest) -> Option<Neighbor> {
     if request.diagnostics.is_empty() {
         return None;
@@ -271,6 +279,8 @@ fn append_diagnostic_line(text: &mut String, diagnostic: &WireDiagnostic) {
     let _ = writeln!(text, ": {}", diagnostic.message);
 }
 
+// Outline stays as structured text because the current Qwen repo-context format
+// already knows how to order file-like context blocks.
 fn outline_neighbor(request: &WireCompletionRequest) -> Option<Neighbor> {
     if request.outline.is_empty() {
         return None;
@@ -297,6 +307,8 @@ fn append_outline_line(text: &mut String, item: &WireOutlineItem) {
     );
 }
 
+// Raw signals are flattened into one block so the core can benefit from them
+// now, before a dedicated retrieval/query stage consumes them directly.
 fn signals_neighbor(request: &WireCompletionRequest) -> Option<Neighbor> {
     let signals = request.signals.as_ref()?;
     let mut text = String::new();
@@ -367,6 +379,8 @@ fn diagnostic_severity_label(severity: WireDiagnosticSeverity) -> &'static str {
     }
 }
 
+// Pseudo-files keep model-specific prompt builders oblivious to where a block
+// came from: retrieval, diagnostics, outline, or frontend-only signals.
 fn metadata_neighbor(file_path: String, text: String) -> Neighbor {
     Neighbor {
         id: file_path.clone(),

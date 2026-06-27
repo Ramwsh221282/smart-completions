@@ -204,6 +204,8 @@ pub enum ClientFrame {
     /// Snapshot for an unsaved or untitled buffer.
     OpenBufferSnapshot(WireInitialDocument),
     /// Request a completion.
+    ///
+    /// Boxed to keep the transport enum compact after the full envelope landed.
     CompletionRequest(Box<WireCompletionRequest>),
     /// Cancel an in-flight request.
     Cancel(WireCancel),
@@ -300,6 +302,8 @@ pub fn decode_server_frame(bytes: &[u8]) -> Result<ServerFrame, ProtocolError> {
     from_generated_server_frame(generated)
 }
 
+// Generated schema types stay isolated here so the rest of the core can keep
+// using stable Wire* DTOs instead of planus-specific table shapes.
 fn to_generated_client_frame(frame: &ClientFrame) -> sc::ClientFrame {
     match frame {
         ClientFrame::InitialDocumentSnapshot(doc) => sc::ClientFrame {
@@ -420,6 +424,8 @@ fn from_generated_client_frame(frame: sc::ClientFrame) -> Result<ClientFrame, Pr
     }
 }
 
+// Stream frames use the same boundary-only conversion so socket handling and
+// application logic never depend on generated accessors directly.
 fn to_generated_server_frame(frame: &ServerFrame) -> sc::StreamFrame {
     match frame {
         ServerFrame::Token { request_id, text } => sc::StreamFrame {
@@ -612,6 +618,8 @@ fn from_generated_text_change(change: sc::TextChange) -> Result<WireTextChange, 
     })
 }
 
+// The schema is richer than the current handlers, so this mapper centralizes
+// which empty sections are omitted versus sent as real values on the wire.
 fn to_generated_completion_request(request: &WireCompletionRequest) -> sc::CompletionRequest {
     sc::CompletionRequest {
         request_id: request.request_id,
@@ -764,6 +772,8 @@ fn from_generated_related_file_hint(
     })
 }
 
+// Empty signals stay absent on the wire, which lets downstream code interpret
+// missing metadata as "not collected" instead of "collected but empty".
 fn generated_signals(signals: Option<&WireSignals>) -> Option<Box<sc::Signals>> {
     let signals = signals?;
     if signals_is_empty(signals) {
@@ -916,6 +926,8 @@ fn signals_is_empty(signals: &WireSignals) -> bool {
         && signals.retrieval_signal_hints.is_empty()
 }
 
+// FlatBuffers omits empty vectors cleanly; keeping that policy in one helper
+// avoids slightly different absence rules across the table mappers.
 fn vec_if_nonempty<T>(values: Vec<T>) -> Option<Vec<T>> {
     if values.is_empty() {
         None
@@ -924,6 +936,8 @@ fn vec_if_nonempty<T>(values: Vec<T>) -> Option<Vec<T>> {
     }
 }
 
+// Some generated fields stay optional for forward-compatibility, but the
+// current high-level DTOs still require them to be present at the boundary.
 fn require_box<T>(value: Option<Box<T>>, field: &'static str) -> Result<T, ProtocolError> {
     Ok(*value.ok_or(ProtocolError::MissingField(field))?)
 }
