@@ -1,0 +1,26 @@
+[package]
+name = "core-app"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+core-types = { path = "../core-types" }
+core-documents = { path = "../core-documents" }
+core-dispatch = { path = "../core-dispatch" }
+core-ipc = { path = "../core-ipc" }
+core-models = { path = "../core-models" }
+core-llama = { path = "../core-llama" }
+bytes.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
+wiremock.workspace = true
+
+[lints]
+workspace = true

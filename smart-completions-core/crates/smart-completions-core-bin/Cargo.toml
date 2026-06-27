@@ -15,9 +15,8 @@ anyhow.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
-core-documents = { path = "../core-documents" }
-core-dispatch = { path = "../core-dispatch" }
-core-ipc = { path = "../core-ipc" }
+core-app = { path = "../core-app" }
+core-llama = { path = "../core-llama" }
 
 [lints]
 workspace = true

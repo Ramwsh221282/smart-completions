@@ -64,6 +64,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
+name = "core-app"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "core-dispatch",
+ "core-documents",
+ "core-ipc",
+ "core-llama",
+ "core-models",
+ "core-types",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
 name = "core-dispatch"
 version = "0.1.0"
 dependencies = [
@@ -842,9 +859,8 @@ name = "smart-completions-core-bin"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "core-dispatch",
- "core-documents",
- "core-ipc",
+ "core-app",
+ "core-llama",
  "tokio",
  "tracing",
  "tracing-subscriber",

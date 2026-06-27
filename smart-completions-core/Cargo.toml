@@ -8,6 +8,7 @@ members = [
   "crates/core-retrieval",
   "crates/core-llama",
   "crates/core-models",
+  "crates/core-app",
   "crates/smart-completions-core-bin",
 ]
 
