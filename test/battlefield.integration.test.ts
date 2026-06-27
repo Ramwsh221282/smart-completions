@@ -40,7 +40,7 @@ const NES_MODEL = (process.env.SC_NES_MODEL ?? 'sweep-default') as NesModelId;
 const NES_CTX = Number(process.env.SC_NES_CTX ?? '8192');
 const NES_INJECT_DIAG = process.env.SC_NES_INJECT_DIAG === '1';
 
-const FIM_TOKENS = /<\|(fim_prefix|fim_suffix|fim_middle|fim_pad|repo_name|file_sep|filename|reponame|endoftext|end_of_text)\|>|<｜fim▁(begin|hole|end)｜>|<\/s>|▁<AIX-SPAN-(PRE|POST|MIDDLE)>/;
+const FIM_TOKENS = /<\|(fim_prefix|fim_suffix|fim_middle|fim_pad|repo_name|file_sep|filename|reponame|endoftext|end_of_text)\|>|<｜fim▁(begin|hole|end)｜>|<\[(fim-(suffix|prefix|middle)|end▁of▁sentence)\]>|<\/s>|▁<AIX-SPAN-(PRE|POST|MIDDLE)>/;
 const CODE_FENCE = /```/;
 const NES_MARKER_LEAK = /<\|cursor\|>|<\|user_cursor\|>|<\|marker_\d+\|>|<<<<<<<|=======|>>>>>>>|<\|file_sep\|>/;
 const LEGACY_NES_SECTIONS = ['context/rules', 'context/retrieval', 'context/diagnostics', 'recent_changes', 'Rewrite the current window'];

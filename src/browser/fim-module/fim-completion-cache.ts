@@ -26,6 +26,7 @@ const KEY_SUFFIX_HEAD = 256;
 @injectable()
 export class FimCompletionCache {
     private readonly exact = new LRUCache<string, FimCacheEntry>({ max: MAX_ENTRIES });
+    // Prefix-extension reuse держится отдельно по uri: это ускоряет "допечатывание" без полного ключа на каждый keystroke.
     private readonly lastByUri = new Map<string, FimCacheEntry>();
 
     lookup(input: FimCacheKeyInput): string | null {
@@ -77,6 +78,7 @@ export class FimCompletionCache {
 }
 
 function buildKey(input: FimCacheKeyInput): string {
+    // Хэшируем только хвост/голову: они определяют локальный completion-context и не раздувают ключ полным документом.
     const prefixTail = input.prefix.length > KEY_PREFIX_TAIL ? input.prefix.slice(-KEY_PREFIX_TAIL) : input.prefix;
     const suffixHead = input.suffix.length > KEY_SUFFIX_HEAD ? input.suffix.slice(0, KEY_SUFFIX_HEAD) : input.suffix;
     return `${input.uri}\u0000${input.fileMode}\u0000${input.generationMode}\u0000${hash32(prefixTail)}\u0000${hash32(suffixHead)}`;

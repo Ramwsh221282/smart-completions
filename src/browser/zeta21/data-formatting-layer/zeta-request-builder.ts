@@ -40,28 +40,16 @@ export class ZetaRequestBuilder {
     /** Фиксирует состояние редактора в момент trigger и останавливает цикл если обязательная история правок пока пуста. */
     async snapshot(model: monaco.editor.ITextModel, position: monaco.Position, history: ZetaRecentEditHistory, diagnostics: DiagnosticDTO[]): Promise<ZetaEditorSnapshot | undefined> {
         const uri = model.uri.toString();
-        const recentEdits = history.getRecentEdits(uri, 8);
+        const recentEdits = this.recentEdits(history, uri);
         if (recentEdits.length === 0) {
             LOG.info('Zeta snapshot skipped because recent edit history is empty', { uri });
             return undefined;
         }
-        const fileMode = fileModeForLanguage(model.getLanguageId());
-        const syntaxWindow = fileMode === 'code'
-            ? await this.syntaxResolver.resolve(model, position, diagnostics)
-            : undefined;
-        const region = syntaxWindow ?? (fileMode === 'prose' ? editorParagraph(model, position) : editorLine(model, position));
+        const fileMode = this.fileMode(model);
+        const syntaxWindow = await this.syntaxWindow(model, position, diagnostics, fileMode);
+        const region = syntaxWindow ?? this.fallbackRegion(model, position, fileMode);
         const regions = buildRegions({ windowText: region.windowText, cursorOffset: region.cursorOffset, syntacticBounds: region.syntacticBounds });
-        LOG.info('Zeta editor snapshot captured', {
-            uri,
-            fileMode,
-            syntaxExpanded: syntaxWindow !== undefined,
-            prefixChars: region.prefixText.length,
-            windowChars: region.windowText.length,
-            suffixChars: region.suffixText.length,
-            regions: regions.length,
-            recentEdits: recentEdits.length,
-            diagnostics: diagnostics.length,
-        });
+        this.logSnapshot(uri, fileMode, syntaxWindow, region, regions, recentEdits, diagnostics);
         return {
             prefixText: region.prefixText,
             windowText: region.windowText,
@@ -76,8 +64,75 @@ export class ZetaRequestBuilder {
 
     /** Собирает снимок и collected related-контекст в единый ZetaRequest для отправки на отдельный zeta21 backend path. */
     request(model: monaco.editor.ITextModel, snapshot: ZetaEditorSnapshot, collected: CollectedZetaContext): ZetaRequest {
+        const request = this.buildRequest(model, snapshot, collected);
+        LOG.info('Zeta backend request built', {
+            requestId: request.requestId,
+            uri: request.uri,
+            fileMode: request.fileMode,
+            regions: request.regions.length,
+            recentEdits: request.recentEdits.length,
+            relatedFiles: request.relatedFiles.length,
+        });
+        return request;
+    }
+
+    private recentEdits(history: ZetaRecentEditHistory, uri: string): RecentEdit[] {
+        return history.getRecentEdits(uri, 8);
+    }
+
+    private fileMode(model: monaco.editor.ITextModel): ZetaRequest['fileMode'] {
+        return fileModeForLanguage(model.getLanguageId());
+    }
+
+    private async syntaxWindow(
+        model: monaco.editor.ITextModel,
+        position: monaco.Position,
+        diagnostics: DiagnosticDTO[],
+        fileMode: ZetaRequest['fileMode'],
+    ): Promise<ResolvedSyntaxWindow | undefined> {
+        if (fileMode !== 'code') {
+            return undefined;
+        }
+        return this.syntaxResolver.resolve(model, position, diagnostics);
+    }
+
+    private fallbackRegion(
+        model: monaco.editor.ITextModel,
+        position: monaco.Position,
+        fileMode: ZetaRequest['fileMode'],
+    ): ResolvedSyntaxWindow {
+        return fileMode === 'prose' ? editorParagraph(model, position) : editorLine(model, position);
+    }
+
+    private logSnapshot(
+        uri: string,
+        fileMode: ZetaRequest['fileMode'],
+        syntaxWindow: ResolvedSyntaxWindow | undefined,
+        region: ResolvedSyntaxWindow,
+        regions: ZetaEditableRegion[],
+        recentEdits: RecentEdit[],
+        diagnostics: DiagnosticDTO[],
+    ): void {
+        LOG.info('Zeta editor snapshot captured', {
+            uri,
+            fileMode,
+            syntaxExpanded: syntaxWindow !== undefined,
+            prefixChars: region.prefixText.length,
+            windowChars: region.windowText.length,
+            suffixChars: region.suffixText.length,
+            regions: regions.length,
+            recentEdits: recentEdits.length,
+            diagnostics: diagnostics.length,
+        });
+    }
+
+    private buildRequest(
+        model: monaco.editor.ITextModel,
+        snapshot: ZetaEditorSnapshot,
+        collected: CollectedZetaContext,
+    ): ZetaRequest {
         const languageId = model.getLanguageId();
-        const request = {
+        return {
             requestId: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
             uri: model.uri.toString(),
             languageId,
@@ -92,15 +147,6 @@ export class ZetaRequestBuilder {
             relatedFiles: collected.relatedFiles,
             diagnostics: snapshot.diagnostics,
         };
-        LOG.info('Zeta backend request built', {
-            requestId: request.requestId,
-            uri: request.uri,
-            fileMode: request.fileMode,
-            regions: request.regions.length,
-            recentEdits: request.recentEdits.length,
-            relatedFiles: request.relatedFiles.length,
-        });
-        return request;
     }
 }
 

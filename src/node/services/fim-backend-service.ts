@@ -2,12 +2,11 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { injectable, inject } from '@theia/core/shared/inversify';
 import { CancellationToken, Disposable } from '@theia/core/lib/common';
-import { isAixcoderFimModel } from '../../common/model-types';
+import { getFimModule } from '../../common/fim/fim-model-registry';
 import { buildFimRetrievalQuery, extractFimSignals } from '../../common/fim/fim-retrieval-queries';
 import { FimBackendService } from '../../common/protocol';
 import { FimConfig, FimRequest, FimResponse } from '../../common/fim-types';
 import { dedupeContextFiles } from '../../common/sweep/dedup-context';
-import { verifyAixcoderSpecialTokens } from '../aixcoder/aixcoder-token-healthcheck';
 import { buildFimPrompt } from '../fim-module/context-formation/builder';
 import { FimEmbeddingIndexService } from '../fim-module/embedding/fim-embedding-index-service';
 import { getFimModelSpec } from '../fim-module/context-formation/model-spec';
@@ -17,16 +16,16 @@ import { FimRetrievalOrchestrator } from '../fim-module/retrieval/fim-retrieval-
 import { normalizeCrlf } from '../util/crlf';
 
 const DEFAULT_FIM_CONFIG: FimConfig = {
-    modelId: 'qwen2.5-coder',
+    modelId: 'seed-coder-8b',
     llamaUrl: 'http://127.0.0.1:8020/v1',
     contextSize: 32768,
     debounceMs: 120,
     generationMode: 'multiline',
     temperature: 0.05,
     ragEnabled: true,
-    fimEmbedderId: 'jina-code',
+    fimEmbedderId: 'qwen3-0.6b',
     embedding: {
-        embedModel: 'jina-code-embeddings-0.5b',
+        embedModel: 'Qwen3-Embedding-0.6B',
         llamaUrl: 'http://127.0.0.1:8040/v1',
         vectorDb: 'lancedb',
         chromaUrl: 'http://127.0.0.1:8000',
@@ -74,7 +73,7 @@ export class FimBackendServiceImpl implements FimBackendService {
             contextSize: Math.max(1024, config.contextSize),
             temperature: Math.min(0.1, Math.max(0, config.temperature)),
         };
-        await this.ensureAixcoderTokens();
+        await this.ensureSpecialTokens();
         if (workspaceRoots) {
             this.workspaceRoots = workspaceRoots.map(uriToFsPath);
         }
@@ -94,58 +93,86 @@ export class FimBackendServiceImpl implements FimBackendService {
 
     async complete(request: FimRequest, token?: CancellationToken): Promise<FimResponse> {
         if (token?.isCancellationRequested) {
-            return { text: '', modelId: this.config.modelId };
+            return this.emptyResponse();
         }
         const abort = bridgeCancellation(token);
         try {
-            const spec = getFimModelSpec(this.config.modelId);
-            const generationMode = request.generationMode ?? this.config.generationMode;
-            const prefix = normalizeCrlf(request.prefix);
-            const suffix = normalizeCrlf(request.suffix);
-            const filePath = this.filePathForUri(request.uri);
-            const neighbors = spec.supportsRepoContext && this.config.ragEnabled && this.config.contextSources.repoContext
-                ? await this.retrieveNeighbors(prefix, request, abort.signal)
-                : [];
-            const deduped = dedupeContextFiles({
-                currentFilePath: filePath,
-                neighbors,
-                relatedFiles: request.relatedFiles ?? [],
-            });
-            const prompt = buildFimPrompt({
-                modelId: this.config.modelId,
-                languageId: request.languageId,
-                fileMode: request.fileMode,
-                prefix,
-                suffix,
-                generationMode,
-                contextSize: this.config.contextSize,
-                repoName: this.repoNameForUri(request.uri),
-                filePath,
-                neighbors: deduped.neighbors,
-                relatedFiles: deduped.relatedFiles,
-                recentEdits: this.config.contextSources.recentEdits ? request.recentEdits ?? [] : [],
-            });
-            const rawText = await this.client.complete({
-                baseUrl: this.config.llamaUrl,
-                model: prompt.llamaModel,
-                prompt: prompt.prompt,
-                stop: prompt.stop,
-                maxTokens: prompt.maxTokens,
-                temperature: this.config.temperature,
-                signal: abort.signal,
-            });
-            return {
-                text: postprocessFimCompletion(rawText, { suffix, generationMode, stopTokens: prompt.stop }),
-                modelId: this.config.modelId,
-            };
+            const normalized = this.normalizeRequest(request);
+            const deduped = await this.loadRepoContext(request, normalized, abort.signal);
+            const prompt = this.buildPrompt(request, normalized, deduped);
+            return await this.completePrompt(prompt, normalized.suffix, normalized.generationMode, abort.signal);
         } catch (error) {
             if (abort.signal.aborted || isAbortError(error)) {
-                return { text: '', modelId: this.config.modelId };
+                return this.emptyResponse();
             }
             throw error;
         } finally {
             abort.dispose();
         }
+    }
+
+    private normalizeRequest(request: FimRequest): NormalizedFimRequest {
+        return {
+            generationMode: request.generationMode ?? this.config.generationMode,
+            prefix: normalizeCrlf(request.prefix),
+            suffix: normalizeCrlf(request.suffix),
+            filePath: this.filePathForUri(request.uri),
+        };
+    }
+
+    private async loadRepoContext(request: FimRequest, normalized: NormalizedFimRequest, signal?: AbortSignal) {
+        const neighbors = await this.retrievePromptNeighbors(request, normalized.prefix, signal);
+        return dedupeContextFiles({
+            currentFilePath: normalized.filePath,
+            neighbors,
+            relatedFiles: request.relatedFiles ?? [],
+        });
+    }
+
+    private async retrievePromptNeighbors(request: FimRequest, prefix: string, signal?: AbortSignal): Promise<Awaited<ReturnType<typeof this.retrieveNeighbors>>> {
+        const spec = getFimModelSpec(this.config.modelId);
+        if (!spec.supportsRepoContext || !this.config.ragEnabled || !this.config.contextSources.repoContext) {
+            return [];
+        }
+        return this.retrieveNeighbors(prefix, request, signal);
+    }
+
+    private buildPrompt(request: FimRequest, normalized: NormalizedFimRequest, deduped: ReturnType<typeof dedupeContextFiles>) {
+        return buildFimPrompt({
+            modelId: this.config.modelId,
+            languageId: request.languageId,
+            fileMode: request.fileMode,
+            prefix: normalized.prefix,
+            suffix: normalized.suffix,
+            generationMode: normalized.generationMode,
+            contextSize: this.config.contextSize,
+            repoName: this.repoNameForUri(request.uri),
+            filePath: normalized.filePath,
+            neighbors: deduped.neighbors,
+            relatedFiles: deduped.relatedFiles,
+            recentEdits: this.config.contextSources.recentEdits ? request.recentEdits ?? [] : [],
+        });
+    }
+
+    private async completePrompt(
+        prompt: ReturnType<typeof buildFimPrompt>,
+        suffix: string,
+        generationMode: FimRequest['generationMode'],
+        signal?: AbortSignal,
+    ): Promise<FimResponse> {
+        const rawText = await this.client.complete({
+            baseUrl: this.config.llamaUrl,
+            model: prompt.llamaModel,
+            prompt: prompt.prompt,
+            stop: prompt.stop,
+            maxTokens: prompt.maxTokens,
+            temperature: this.config.temperature,
+            signal,
+        });
+        return {
+            text: postprocessFimCompletion(rawText, { suffix, generationMode, stopTokens: prompt.stop }),
+            modelId: this.config.modelId,
+        };
     }
 
     private async retrieveNeighbors(prefix: string, request: FimRequest, signal?: AbortSignal) {
@@ -186,15 +213,27 @@ export class FimBackendServiceImpl implements FimBackendService {
         return this.fimIndex.workspaceRoots.find(root => fsPath === root || fsPath.startsWith(root + path.sep));
     }
 
-    private async ensureAixcoderTokens(): Promise<void> {
-        if (!isAixcoderFimModel(this.config.modelId)) {
+    private async ensureSpecialTokens(): Promise<void> {
+        const module = getFimModule(this.config.modelId);
+        if (!module.verifySpecialTokens) {
             return;
         }
-        const tokensOk = await verifyAixcoderSpecialTokens(this.config.llamaUrl);
+        const tokensOk = await module.verifySpecialTokens(this.config.llamaUrl);
         if (!tokensOk) {
-            throw new Error('aiXcoder GGUF does not preserve AIX-SPAN special tokens');
+            throw new Error(`${module.modelId}: GGUF does not preserve special tokens`);
         }
     }
+
+    private emptyResponse(): FimResponse {
+        return { text: '', modelId: this.config.modelId };
+    }
+}
+
+interface NormalizedFimRequest {
+    generationMode: FimRequest['generationMode'];
+    prefix: string;
+    suffix: string;
+    filePath: string;
 }
 
 function bridgeCancellation(token?: CancellationToken): { signal: AbortSignal; dispose(): void } {

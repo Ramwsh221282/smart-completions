@@ -8,7 +8,7 @@ import { verifyAixcoderSpecialTokens } from '../src/node/aixcoder/aixcoder-token
 
 const ENABLED = process.env.SC_AIX_IT === '1';
 const BASE_URL = process.env.SC_AIX_URL ?? process.env.SC_FIM_URL ?? 'http://127.0.0.1:8020/v1';
-const LEAKED_TOKENS = /<\|(fim_prefix|fim_suffix|fim_middle|fim_pad|repo_name|file_sep|filename|reponame|endoftext|end_of_text)\|>|<｜fim▁(begin|hole|end)｜>|<\/s>|▁<AIX-SPAN-(PRE|POST|MIDDLE)>/;
+const LEAKED_TOKENS = /<\|(fim_prefix|fim_suffix|fim_middle|fim_pad|repo_name|file_sep|filename|reponame|endoftext|end_of_text)\|>|<｜fim▁(begin|hole|end)｜>|<\[(fim-(suffix|prefix|middle)|end▁of▁sentence)\]>|<\/s>|▁<AIX-SPAN-(PRE|POST|MIDDLE)>/;
 const CODE_FENCE = /```/;
 
 const client = new LlamaFimClient();

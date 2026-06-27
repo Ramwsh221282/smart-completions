@@ -1,11 +1,9 @@
-import { buildAixcoderHeader } from '../../../common/aixcoder/aixcoder-header';
-import { buildAixcoderEditSnippets, renderAixcoderPrompt } from '../../../common/aixcoder/aixcoder-prompt-builder';
-import { buildGraniteEditSnippets, renderGranitePrompt } from '../../../common/granite41/granite-prompt-builder';
+import { getFimModule } from '../../../common/fim/fim-model-registry';
+import type { FimModelModule, FimPromptRenderInput } from '../../../common/fim/fim-model-module';
 import type { Neighbor } from '../../../common/embedding-types';
-import { buildEditHistorySnippets } from '../../../common/fim/fim-udiff';
 import type { FimRelatedFile } from '../../../common/fim-types';
 import type { RecentEdit } from '../../../common/edit-history-types';
-import { GenerationMode, FimModelId } from '../../../common/model-types';
+import type { GenerationMode, FimModelId } from '../../../common/model-types';
 import { FileMode } from '../../../common/mode-types';
 import { normalizeCrlf } from '../../util/crlf';
 import { fimMaxTokens, fimStopTokens, getFimModelSpec } from './model-spec';
@@ -44,13 +42,14 @@ interface PreparedRepoContext {
 
 export function buildFimPrompt(input: BuildFimPromptInput): BuiltFimPrompt {
     const spec = getFimModelSpec(input.modelId);
-    const repoContext = prepareRepoContext(input, spec);
+    const module = getFimModule(input.modelId);
+    const repoContext = prepareRepoContext(input, module);
     const trimmed = trimFimContext(normalizeCrlf(input.prefix), normalizeCrlf(input.suffix), {
         fileMode: input.fileMode,
         contextSize: input.contextSize,
         reservedChars: repoContext.reservedChars,
     });
-    const prompt = buildPromptText(input, spec, trimmed.prefix, trimmed.suffix, repoContext);
+    const prompt = buildPromptText(input, module, trimmed.prefix, trimmed.suffix, repoContext);
     return {
         prompt,
         stop: fimStopTokens(spec),
@@ -59,86 +58,41 @@ export function buildFimPrompt(input: BuildFimPromptInput): BuiltFimPrompt {
     };
 }
 
-function prepareRepoContext(input: BuildFimPromptInput, spec: ReturnType<typeof getFimModelSpec>): PreparedRepoContext {
-    if (!spec.supportsRepoContext) {
+function prepareRepoContext(input: BuildFimPromptInput, module: FimModelModule): PreparedRepoContext {
+    if (!module.supportsRepoContext) {
         return emptyRepoContext();
     }
     const neighbors = normalizeNeighbors(input.neighbors ?? []);
     const relatedFiles = normalizeRelatedFiles(input.relatedFiles ?? []);
-    const editSnippets = buildRepoEditSnippets(input, spec);
+    const editSnippets = buildRepoEditSnippets(input, module);
+    const useRepoContext = neighbors.length > 0 || relatedFiles.length > 0 || editSnippets.length > 0;
     return {
         neighbors,
         relatedFiles,
         editSnippets,
-        reservedChars: countReservedChars(input, spec, neighbors, relatedFiles, editSnippets),
-        useRepoContext: neighbors.length > 0 || relatedFiles.length > 0 || editSnippets.length > 0,
+        // reservedChars заранее резервирует место под repo-blocks, чтобы trim не выдавил текущий файл целиком.
+        reservedChars: useRepoContext ? countReservedChars(input, module, neighbors, relatedFiles, editSnippets) : 0,
+        useRepoContext,
     };
 }
 
-function buildRepoEditSnippets(input: BuildFimPromptInput, spec: ReturnType<typeof getFimModelSpec>): string[] {
+function buildRepoEditSnippets(input: BuildFimPromptInput, module: FimModelModule): string[] {
     const maxRecentEditSnippets = input.maxRecentEditSnippets ?? 3;
     const recentEdits = input.recentEdits ?? [];
     if (recentEdits.length === 0 || maxRecentEditSnippets <= 0) {
         return [];
     }
-    if (spec.repoFormat === 'aixcoder') {
-        return buildAixcoderEditSnippets(input.languageId ?? '', recentEdits, maxRecentEditSnippets);
-    }
-    if (spec.repoFormat === 'comment') {
-        return buildGraniteEditSnippets(input.languageId ?? '', recentEdits, maxRecentEditSnippets);
-    }
-    if (hasTokenRepoSlots(spec)) {
-        return buildEditHistorySnippets(spec.fileToken, recentEdits, maxRecentEditSnippets);
-    }
-    return [];
+    return module.buildEditSnippets(input.languageId ?? '', recentEdits, maxRecentEditSnippets);
 }
 
 function buildPromptText(
     input: BuildFimPromptInput,
-    spec: ReturnType<typeof getFimModelSpec>,
+    module: FimModelModule,
     prefix: string,
     suffix: string,
     repoContext: PreparedRepoContext,
 ): string {
-    if (spec.templateId === 'aixcoder') {
-        return renderAixcoderPrompt({
-            languageId: input.languageId ?? '',
-            filePath: input.filePath ?? 'current-file',
-            prefix,
-            suffix,
-            neighbors: repoContext.neighbors,
-            relatedFiles: repoContext.relatedFiles,
-            editSnippets: repoContext.editSnippets,
-        });
-    }
-    if (!repoContext.useRepoContext) {
-        return renderFileLevelFim(spec.tokens, prefix, suffix);
-    }
-    if (spec.repoFormat === 'comment') {
-        return renderGranitePrompt({
-            languageId: input.languageId ?? '',
-            filePath: input.filePath,
-            prefix,
-            suffix,
-            neighbors: repoContext.neighbors,
-            relatedFiles: repoContext.relatedFiles,
-            editSnippets: repoContext.editSnippets,
-            tokens: spec.tokens,
-        });
-    }
-    if (hasTokenRepoSlots(spec)) {
-        return renderRepoPrompt(
-            spec.repoNameToken,
-            spec.fileToken,
-            input.repoName,
-            input.filePath,
-            repoContext.neighbors,
-            repoContext.relatedFiles,
-            repoContext.editSnippets,
-            renderFileLevelFim(spec.tokens, prefix, suffix),
-        );
-    }
-    return renderFileLevelFim(spec.tokens, prefix, suffix);
+    return module.renderPrompt(toPromptRenderInput(input, prefix, suffix, repoContext));
 }
 
 function normalizeNeighbors(neighbors: Neighbor[]): Neighbor[] {
@@ -155,33 +109,43 @@ function normalizeRelatedFiles(files: FimRelatedFile[]): FimRelatedFile[] {
     }));
 }
 
-function renderFileLevelFim(tokens: { prefix: string; suffix: string; middle: string }, prefix: string, suffix: string): string {
-    return `${tokens.prefix}${prefix}${tokens.suffix}${suffix}${tokens.middle}`;
-}
-
-function hasTokenRepoSlots(spec: ReturnType<typeof getFimModelSpec>): spec is ReturnType<typeof getFimModelSpec> & { repoNameToken: string; fileToken: string } {
-    return Boolean(spec.repoNameToken && spec.fileToken);
+function toPromptRenderInput(
+    input: BuildFimPromptInput,
+    prefix: string,
+    suffix: string,
+    repoContext: PreparedRepoContext,
+): FimPromptRenderInput {
+    return {
+        languageId: input.languageId ?? '',
+        repoName: input.repoName ?? 'workspace',
+        filePath: input.filePath ?? 'current-file',
+        prefix,
+        suffix,
+        neighbors: repoContext.neighbors,
+        relatedFiles: repoContext.relatedFiles,
+        editSnippets: repoContext.editSnippets,
+        useRepoContext: repoContext.useRepoContext,
+    };
 }
 
 function countReservedChars(
     input: BuildFimPromptInput,
-    spec: ReturnType<typeof getFimModelSpec>,
+    module: FimModelModule,
     neighbors: Neighbor[],
     relatedFiles: FimRelatedFile[],
     editSnippets: string[],
 ): number {
-    if (spec.templateId === 'aixcoder') {
-        return countAixcoderReservedChars(input.languageId ?? '', neighbors, relatedFiles, editSnippets);
-    }
-    return neighbors.reduce((sum, neighbor) => sum + neighbor.text.length + neighbor.filePath.length + 8, 0)
-        + relatedFiles.reduce((sum, file) => sum + file.content.length + file.filePath.length + 8, 0)
-        + editSnippets.reduce((sum, snippet) => sum + snippet.length, 0);
-}
-
-function countAixcoderReservedChars(languageId: string, neighbors: Neighbor[], relatedFiles: FimRelatedFile[], editSnippets: string[]): number {
-    return neighbors.reduce((sum, neighbor) => sum + buildAixcoderHeader(neighbor.filePath, languageId).length + neighbor.text.length + 1, 0)
-        + relatedFiles.reduce((sum, file) => sum + buildAixcoderHeader(file.filePath, languageId).length + file.content.length + 1, 0)
-        + editSnippets.reduce((sum, snippet) => sum + snippet.length + 1, 0);
+    return module.countReservedChars({
+        languageId: input.languageId ?? '',
+        repoName: input.repoName ?? 'workspace',
+        filePath: input.filePath ?? 'current-file',
+        prefix: '',
+        suffix: '',
+        neighbors,
+        relatedFiles,
+        editSnippets,
+        useRepoContext: true,
+    });
 }
 
 function emptyRepoContext(): PreparedRepoContext {
@@ -192,30 +156,4 @@ function emptyRepoContext(): PreparedRepoContext {
         reservedChars: 0,
         useRepoContext: false,
     };
-}
-
-function renderRepoPrompt(
-    repoNameToken: string,
-    fileToken: string,
-    repoName = 'workspace',
-    filePath = 'current-file',
-    neighbors: Neighbor[],
-    relatedFiles: FimRelatedFile[],
-    editSnippets: string[],
-    currentFim: string,
-): string {
-    const chunks = [`${repoNameToken}${repoName}`];
-    for (let i = neighbors.length - 1; i >= 0; i--) {
-        const neighbor = neighbors[i];
-        chunks.push(`${fileToken}${neighbor.filePath}\n${neighbor.text}`);
-    }
-    for (let i = 0; i < relatedFiles.length; i++) {
-        const related = relatedFiles[i];
-        chunks.push(`${fileToken}${related.filePath}\n${related.content}`);
-    }
-    for (let i = 0; i < editSnippets.length; i++) {
-        chunks.push(editSnippets[i]);
-    }
-    chunks.push(`${fileToken}${filePath}\n${currentFim}`);
-    return chunks.join('\n');
 }

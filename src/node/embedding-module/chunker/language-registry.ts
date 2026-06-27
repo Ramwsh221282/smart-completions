@@ -50,7 +50,7 @@ export function grammarForLanguage(languageId: string): string | undefined {
     return GRAMMAR_BY_LANGUAGE[languageId.toLowerCase()];
 }
 
-/** Есть ли tree-sitter грамматика → режим «код». */
+/** Наличие grammar определяет, можно ли безопасно идти в AST chunking вместо prose fallback. */
 export function isCodeLanguage(languageId: string): boolean {
     return grammarForLanguage(languageId) !== undefined;
 }
@@ -105,7 +105,7 @@ const LANGUAGE_BY_EXT: Record<string, string> = {
     '.yaml': 'yaml',
     '.yml': 'yaml',
     '.toml': 'toml',
-    // проза
+    // Эти расширения сознательно ведут в prose chunker: они обычно выигрывают от абзацев, а не от AST-узлов.
     '.md': 'markdown',
     '.markdown': 'markdown',
     '.mdx': 'markdown',
@@ -117,7 +117,7 @@ const LANGUAGE_BY_EXT: Record<string, string> = {
     '.org': 'org',
 };
 
-/** languageId по расширению (best-effort; неизвестное → plaintext → проза). */
+/** Best-effort mapping для индексатора, который видит только fs path; неизвестное расширение уходит в prose-safe plaintext. */
 export function languageIdForExtension(ext: string): string {
     return LANGUAGE_BY_EXT[ext.toLowerCase()] ?? 'plaintext';
 }

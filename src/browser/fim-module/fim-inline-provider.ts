@@ -173,6 +173,8 @@ function shouldCollectFimContext(config: FimConfig): boolean {
 }
 
 function shouldTrigger(model: monaco.editor.ITextModel, position: monaco.Position, fileMode: 'code' | 'prose'): boolean {
+    // Автотриггер ограничен небольшим набором символов, чтобы FIM срабатывал после естественных boundary,
+    // а не на каждом keystroke внутри слова или в середине уже печатаемого идентификатора.
     if (position.column < model.getLineMaxColumn(position.lineNumber)) {
         const next = model.getLineContent(position.lineNumber).charAt(position.column - 1);
         if (/\w/.test(next)) {

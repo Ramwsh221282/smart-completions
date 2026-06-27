@@ -1,10 +1,10 @@
 import { PreferenceSchema } from '@theia/core/lib/common/preferences/preference-schema';
 import { PreferenceService } from '@theia/core/lib/common/preferences/preference-service';
-import { AIXCODER_CONTEXT_TOKENS } from '../../common/aixcoder/aixcoder-tokens';
 import { EmbeddingConfig } from '../../common/embedding-types';
+import { FIM_MODEL_IDS, getFimModule } from '../../common/fim/fim-model-registry';
 import { FimConfig } from '../../common/fim-types';
 import { DEFAULT_DIAGNOSTICS_GATE_CONFIG, NesConfig } from '../../common/nes-types';
-import { EmbedModelId, FimModelId, GenerationMode, NesModelId, VectorDbId, isAixcoderFimModel, isGraniteFimModel } from '../../common/model-types';
+import { EmbedModelId, FimModelId, GenerationMode, NesModelId, VectorDbId } from '../../common/model-types';
 import { SweepProfileId, getSweepProfile, sweepProfileIdForModel, sweepRequestModelName } from '../../common/sweep/profiles';
 import { DEFAULT_SWEEP_FUZZY_CONFIG, DEFAULT_SWEEP_GRAPH_CONFIG, DEFAULT_SWEEP_RERANK_CONFIG } from '../../common/sweep/types';
 import type { ZetaConfig } from '../../common/zeta21/types';
@@ -35,8 +35,8 @@ export const SMART_COMPLETIONS_PREFERENCE_SCHEMA: PreferenceSchema = {
         },
         'smart-completions.fim.modelId': {
             type: 'string',
-            enum: ['qwen2.5-coder', 'deepseek-coder', 'omnicoder', 'aixcoder-7b-v2', 'granite-4.1-8b', 'granite-4.1-3b'],
-            default: 'qwen2.5-coder',
+            enum: [...FIM_MODEL_IDS],
+            default: 'seed-coder-8b',
             description: 'Active FIM model served by llama.cpp.',
         },
         'smart-completions.fim.llamaUrl': {
@@ -346,73 +346,34 @@ export const SMART_COMPLETIONS_PREFERENCE_SCHEMA: PreferenceSchema = {
     },
 };
 
-const FIM_CONTEXT_MAX: Record<FimModelId, number> = {
-    'qwen2.5-coder': 32768,
-    'deepseek-coder': 16384,
-    omnicoder: 32768,
-    'aixcoder-7b-v2': AIXCODER_CONTEXT_TOKENS,
-    'granite-4.1-8b': 128000,
-    'granite-4.1-3b': 128000,
-};
-
-/** Собрать FimConfig из PreferenceService. */
+/** Читает FIM prefs и применяет model-aware fallbacks: context max, qwen3-space routing и retrieval toggles. */
 export function readFimConfig(preferences: PreferenceService): FimConfig {
-    const modelId = preferences.get<FimModelId>('smart-completions.fim.modelId', 'qwen2.5-coder');
-    const configuredContextSize = preferences.get<number>('smart-completions.fim.contextSize', 0);
-    const embedding = readEmbeddingConfig(preferences);
-    const configuredFimEmbedderId = preferences.get<string>('smart-completions.fim.fimEmbedderId', 'jina-code');
+    const modelId = preferences.get<FimModelId>('smart-completions.fim.modelId', 'seed-coder-8b');
     return {
         modelId,
         llamaUrl: preferences.get<string>('smart-completions.fim.llamaUrl', 'http://127.0.0.1:8020/v1'),
-        contextSize: configuredContextSize > 0 ? configuredContextSize : FIM_CONTEXT_MAX[modelId],
+        contextSize: fimContextSize(preferences, modelId),
         debounceMs: preferences.get<number>('smart-completions.fim.debounceMs', 120),
         generationMode: preferences.get<GenerationMode>('smart-completions.fim.generationMode', 'multiline'),
         temperature: preferences.get<number>('smart-completions.fim.temperature', 0.05),
         ragEnabled: preferences.get<boolean>('smart-completions.fim.ragEnabled', true),
-        fimEmbedderId: forceQwen3FimEmbedder(modelId) ? 'qwen3-0.6b' : configuredFimEmbedderId,
-        embedding,
-        retrieval: {
-            rerank: {
-                enabled: preferences.get<boolean>('smart-completions.fim.retrieval.rerank.enabled', DEFAULT_FIM_RERANK_CONFIG.enabled),
-                llamaUrl: preferences.get<string>('smart-completions.fim.retrieval.rerank.llamaUrl', DEFAULT_FIM_RERANK_CONFIG.llamaUrl),
-                model: preferences.get<string>('smart-completions.fim.retrieval.rerank.model', DEFAULT_FIM_RERANK_CONFIG.model),
-                instruction: preferences.get<string>('smart-completions.fim.retrieval.rerank.instruction', DEFAULT_FIM_RERANK_CONFIG.instruction),
-                candidatePoolN: preferences.get<number>('smart-completions.fim.retrieval.rerank.candidatePoolN', DEFAULT_FIM_RERANK_CONFIG.candidatePoolN),
-                rerankTopN: preferences.get<number>('smart-completions.fim.retrieval.rerank.rerankTopN', DEFAULT_FIM_RERANK_CONFIG.rerankTopN),
-                finalTopN: preferences.get<number>('smart-completions.fim.retrieval.rerank.finalTopN', DEFAULT_FIM_RERANK_CONFIG.finalTopN),
-                ambiguityMargin: preferences.get<number>('smart-completions.fim.retrieval.rerank.ambiguityMargin', DEFAULT_FIM_RERANK_CONFIG.ambiguityMargin),
-                timeoutMs: preferences.get<number>('smart-completions.fim.retrieval.rerank.timeoutMs', DEFAULT_FIM_RERANK_CONFIG.timeoutMs),
-                maxDocChars: preferences.get<number>('smart-completions.fim.retrieval.rerank.maxDocChars', DEFAULT_FIM_RERANK_CONFIG.maxDocChars),
-            },
-            graph: {
-                enabled: preferences.get<boolean>('smart-completions.fim.retrieval.graph.enabled', DEFAULT_SWEEP_GRAPH_CONFIG.enabled),
-            },
-            fuzzy: {
-                enabled: preferences.get<boolean>('smart-completions.fim.retrieval.fuzzy.enabled', DEFAULT_SWEEP_FUZZY_CONFIG.enabled),
-            },
-        },
-        contextSources: {
-            recentEdits: preferences.get<boolean>('smart-completions.fim.contextSources.recentEdits', true),
-            repoContext: preferences.get<boolean>('smart-completions.fim.contextSources.repoContext', true),
-            diagnostics: preferences.get<boolean>('smart-completions.fim.contextSources.diagnostics', false),
-        },
+        fimEmbedderId: fimEmbedderId(preferences, modelId),
+        embedding: readEmbeddingConfig(preferences),
+        retrieval: readFimRetrievalConfig(preferences),
+        contextSources: readFimContextSources(preferences),
     };
 }
 
 function forceQwen3FimEmbedder(modelId: FimModelId): boolean {
-    return isGraniteFimModel(modelId) || isAixcoderFimModel(modelId);
+    return getFimModule(modelId).embedderId === 'qwen3-0.6b';
 }
 
-/** Собрать NesConfig из PreferenceService. */
+/** Читает Sweep/legacy NES prefs и собирает runtime config без дублирования model-profile логики по call sites. */
 export function readNesConfig(preferences: PreferenceService): NesConfig {
     const modelId = preferences.get<NesModelId>('smart-completions.nes.modelId', 'sweep-default');
     const smallSize = preferences.get<SweepProfileId>('smart-completions.nes.sweepSmallSize', '1.5b');
     const profileId = sweepProfileIdForModel(modelId, smallSize);
     const profile = getSweepProfile(profileId);
-    const requestModelName = sweepRequestModelName(
-        profileId,
-        preferences.get<string>('smart-completions.nes.requestModelName', ''),
-    );
     return {
         modelId,
         llamaUrl: preferences.get<string>('smart-completions.nes.llamaUrl', 'http://127.0.0.1:8010/v1'),
@@ -424,25 +385,10 @@ export function readNesConfig(preferences: PreferenceService): NesConfig {
         relatedTopN: preferences.get<number>('smart-completions.nes.relatedTopN', 5),
         queryMaxChars: preferences.get<number>('smart-completions.nes.queryMaxChars', 400),
         profile,
-        requestModelName,
-        rerank: {
-            enabled: preferences.get<boolean>('smart-completions.nes.rerank.enabled', DEFAULT_SWEEP_RERANK_CONFIG.enabled),
-            llamaUrl: preferences.get<string>('smart-completions.nes.rerank.llamaUrl', DEFAULT_SWEEP_RERANK_CONFIG.llamaUrl),
-            model: preferences.get<string>('smart-completions.nes.rerank.model', DEFAULT_SWEEP_RERANK_CONFIG.model),
-            instruction: preferences.get<string>('smart-completions.nes.rerank.instruction', DEFAULT_SWEEP_RERANK_CONFIG.instruction),
-            candidatePoolN: preferences.get<number>('smart-completions.nes.rerank.candidatePoolN', DEFAULT_SWEEP_RERANK_CONFIG.candidatePoolN),
-            rerankTopN: preferences.get<number>('smart-completions.nes.rerank.rerankTopN', DEFAULT_SWEEP_RERANK_CONFIG.rerankTopN),
-            finalTopN: preferences.get<number>('smart-completions.nes.rerank.finalTopN', DEFAULT_SWEEP_RERANK_CONFIG.finalTopN),
-            ambiguityMargin: preferences.get<number>('smart-completions.nes.rerank.ambiguityMargin', DEFAULT_SWEEP_RERANK_CONFIG.ambiguityMargin),
-            timeoutMs: preferences.get<number>('smart-completions.nes.rerank.timeoutMs', DEFAULT_SWEEP_RERANK_CONFIG.timeoutMs),
-            maxDocChars: preferences.get<number>('smart-completions.nes.rerank.maxDocChars', DEFAULT_SWEEP_RERANK_CONFIG.maxDocChars),
-        },
-        graph: {
-            enabled: preferences.get<boolean>('smart-completions.nes.graph.enabled', DEFAULT_SWEEP_GRAPH_CONFIG.enabled),
-        },
-        fuzzy: {
-            enabled: preferences.get<boolean>('smart-completions.nes.fuzzy.enabled', DEFAULT_SWEEP_FUZZY_CONFIG.enabled),
-        },
+        requestModelName: readNesRequestModelName(preferences, profileId),
+        rerank: readNesRerankConfig(preferences),
+        graph: readNesGraphConfig(preferences),
+        fuzzy: readNesFuzzyConfig(preferences),
         diagnosticsGate: {
             enabled: preferences.get<boolean>('smart-completions.nes.diagnosticsGate.enabled', DEFAULT_DIAGNOSTICS_GATE_CONFIG.enabled),
             mode: preferences.get<'warn' | 'revert'>('smart-completions.nes.diagnosticsGate.mode', DEFAULT_DIAGNOSTICS_GATE_CONFIG.mode),
@@ -452,7 +398,7 @@ export function readNesConfig(preferences: PreferenceService): NesConfig {
     };
 }
 
-/** Собрать ZetaConfig из тех же NES preferences, но без Sweep-only полей и с zeta21 model default. */
+/** Читает ZetaConfig из NES prefs, сохраняя общие retrieval knobs, но подставляя zeta21-specific defaults. */
 export function readZetaConfig(preferences: PreferenceService): ZetaConfig {
     const configuredContext = preferences.get<number>('smart-completions.nes.contextSize', ZETA_PROFILE.contextTokens);
     return {
@@ -463,28 +409,13 @@ export function readZetaConfig(preferences: PreferenceService): ZetaConfig {
         ragEnabled: preferences.get<boolean>('smart-completions.nes.ragEnabled', true),
         relatedTopN: preferences.get<number>('smart-completions.nes.relatedTopN', 5),
         queryMaxChars: preferences.get<number>('smart-completions.nes.queryMaxChars', 400),
-        rerank: {
-            enabled: preferences.get<boolean>('smart-completions.nes.rerank.enabled', DEFAULT_SWEEP_RERANK_CONFIG.enabled),
-            llamaUrl: preferences.get<string>('smart-completions.nes.rerank.llamaUrl', DEFAULT_SWEEP_RERANK_CONFIG.llamaUrl),
-            model: preferences.get<string>('smart-completions.nes.rerank.model', DEFAULT_SWEEP_RERANK_CONFIG.model),
-            instruction: preferences.get<string>('smart-completions.nes.rerank.instruction', DEFAULT_SWEEP_RERANK_CONFIG.instruction),
-            candidatePoolN: preferences.get<number>('smart-completions.nes.rerank.candidatePoolN', DEFAULT_SWEEP_RERANK_CONFIG.candidatePoolN),
-            rerankTopN: preferences.get<number>('smart-completions.nes.rerank.rerankTopN', DEFAULT_SWEEP_RERANK_CONFIG.rerankTopN),
-            finalTopN: preferences.get<number>('smart-completions.nes.rerank.finalTopN', DEFAULT_SWEEP_RERANK_CONFIG.finalTopN),
-            ambiguityMargin: preferences.get<number>('smart-completions.nes.rerank.ambiguityMargin', DEFAULT_SWEEP_RERANK_CONFIG.ambiguityMargin),
-            timeoutMs: preferences.get<number>('smart-completions.nes.rerank.timeoutMs', DEFAULT_SWEEP_RERANK_CONFIG.timeoutMs),
-            maxDocChars: preferences.get<number>('smart-completions.nes.rerank.maxDocChars', DEFAULT_SWEEP_RERANK_CONFIG.maxDocChars),
-        },
-        graph: {
-            enabled: preferences.get<boolean>('smart-completions.nes.graph.enabled', DEFAULT_SWEEP_GRAPH_CONFIG.enabled),
-        },
-        fuzzy: {
-            enabled: preferences.get<boolean>('smart-completions.nes.fuzzy.enabled', DEFAULT_SWEEP_FUZZY_CONFIG.enabled),
-        },
+        rerank: readNesRerankConfig(preferences),
+        graph: readNesGraphConfig(preferences),
+        fuzzy: readNesFuzzyConfig(preferences),
     };
 }
 
-/** Собрать EmbeddingConfig из PreferenceService. */
+/** Читает infra-параметры embedding/vector store без FIM/NES-specific overrides. */
 export function readEmbeddingConfig(preferences: PreferenceService): EmbeddingConfig {
     return {
         embedModel: preferences.get<EmbedModelId>('smart-completions.embedding.embedModel', 'nomic'),
@@ -496,5 +427,76 @@ export function readEmbeddingConfig(preferences: PreferenceService): EmbeddingCo
         chunkSize: preferences.get<number>('smart-completions.embedding.chunkSize', 40),
         topN: preferences.get<number>('smart-completions.embedding.topN', 4),
         prefixTailChars: preferences.get<number>('smart-completions.embedding.prefixTailChars', 400),
+    };
+}
+
+function fimContextSize(preferences: PreferenceService, modelId: FimModelId): number {
+    const configuredContextSize = preferences.get<number>('smart-completions.fim.contextSize', 0);
+    return configuredContextSize > 0 ? configuredContextSize : getFimModule(modelId).contextTokens;
+}
+
+function fimEmbedderId(preferences: PreferenceService, modelId: FimModelId): string {
+    const configuredFimEmbedderId = preferences.get<string>('smart-completions.fim.fimEmbedderId', 'jina-code');
+    return forceQwen3FimEmbedder(modelId) ? 'qwen3-0.6b' : configuredFimEmbedderId;
+}
+
+function readFimRetrievalConfig(preferences: PreferenceService): FimConfig['retrieval'] {
+    return {
+        rerank: {
+            enabled: preferences.get<boolean>('smart-completions.fim.retrieval.rerank.enabled', DEFAULT_FIM_RERANK_CONFIG.enabled),
+            llamaUrl: preferences.get<string>('smart-completions.fim.retrieval.rerank.llamaUrl', DEFAULT_FIM_RERANK_CONFIG.llamaUrl),
+            model: preferences.get<string>('smart-completions.fim.retrieval.rerank.model', DEFAULT_FIM_RERANK_CONFIG.model),
+            instruction: preferences.get<string>('smart-completions.fim.retrieval.rerank.instruction', DEFAULT_FIM_RERANK_CONFIG.instruction),
+            candidatePoolN: preferences.get<number>('smart-completions.fim.retrieval.rerank.candidatePoolN', DEFAULT_FIM_RERANK_CONFIG.candidatePoolN),
+            rerankTopN: preferences.get<number>('smart-completions.fim.retrieval.rerank.rerankTopN', DEFAULT_FIM_RERANK_CONFIG.rerankTopN),
+            finalTopN: preferences.get<number>('smart-completions.fim.retrieval.rerank.finalTopN', DEFAULT_FIM_RERANK_CONFIG.finalTopN),
+            ambiguityMargin: preferences.get<number>('smart-completions.fim.retrieval.rerank.ambiguityMargin', DEFAULT_FIM_RERANK_CONFIG.ambiguityMargin),
+            timeoutMs: preferences.get<number>('smart-completions.fim.retrieval.rerank.timeoutMs', DEFAULT_FIM_RERANK_CONFIG.timeoutMs),
+            maxDocChars: preferences.get<number>('smart-completions.fim.retrieval.rerank.maxDocChars', DEFAULT_FIM_RERANK_CONFIG.maxDocChars),
+        },
+        graph: readNesGraphConfig(preferences),
+        fuzzy: readNesFuzzyConfig(preferences),
+    };
+}
+
+function readFimContextSources(preferences: PreferenceService): FimConfig['contextSources'] {
+    return {
+        recentEdits: preferences.get<boolean>('smart-completions.fim.contextSources.recentEdits', true),
+        repoContext: preferences.get<boolean>('smart-completions.fim.contextSources.repoContext', true),
+        diagnostics: preferences.get<boolean>('smart-completions.fim.contextSources.diagnostics', false),
+    };
+}
+
+function readNesRequestModelName(preferences: PreferenceService, profileId: SweepProfileId): string {
+    return sweepRequestModelName(
+        profileId,
+        preferences.get<string>('smart-completions.nes.requestModelName', ''),
+    );
+}
+
+function readNesRerankConfig(preferences: PreferenceService): NesConfig['rerank'] {
+    return {
+        enabled: preferences.get<boolean>('smart-completions.nes.rerank.enabled', DEFAULT_SWEEP_RERANK_CONFIG.enabled),
+        llamaUrl: preferences.get<string>('smart-completions.nes.rerank.llamaUrl', DEFAULT_SWEEP_RERANK_CONFIG.llamaUrl),
+        model: preferences.get<string>('smart-completions.nes.rerank.model', DEFAULT_SWEEP_RERANK_CONFIG.model),
+        instruction: preferences.get<string>('smart-completions.nes.rerank.instruction', DEFAULT_SWEEP_RERANK_CONFIG.instruction),
+        candidatePoolN: preferences.get<number>('smart-completions.nes.rerank.candidatePoolN', DEFAULT_SWEEP_RERANK_CONFIG.candidatePoolN),
+        rerankTopN: preferences.get<number>('smart-completions.nes.rerank.rerankTopN', DEFAULT_SWEEP_RERANK_CONFIG.rerankTopN),
+        finalTopN: preferences.get<number>('smart-completions.nes.rerank.finalTopN', DEFAULT_SWEEP_RERANK_CONFIG.finalTopN),
+        ambiguityMargin: preferences.get<number>('smart-completions.nes.rerank.ambiguityMargin', DEFAULT_SWEEP_RERANK_CONFIG.ambiguityMargin),
+        timeoutMs: preferences.get<number>('smart-completions.nes.rerank.timeoutMs', DEFAULT_SWEEP_RERANK_CONFIG.timeoutMs),
+        maxDocChars: preferences.get<number>('smart-completions.nes.rerank.maxDocChars', DEFAULT_SWEEP_RERANK_CONFIG.maxDocChars),
+    };
+}
+
+function readNesGraphConfig(preferences: PreferenceService): NesConfig['graph'] {
+    return {
+        enabled: preferences.get<boolean>('smart-completions.nes.graph.enabled', DEFAULT_SWEEP_GRAPH_CONFIG.enabled),
+    };
+}
+
+function readNesFuzzyConfig(preferences: PreferenceService): NesConfig['fuzzy'] {
+    return {
+        enabled: preferences.get<boolean>('smart-completions.nes.fuzzy.enabled', DEFAULT_SWEEP_FUZZY_CONFIG.enabled),
     };
 }

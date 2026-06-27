@@ -31,7 +31,9 @@ export class FimLogger {
 
     prompt(label: string, prompt: string, meta?: FimLogMeta): void {
         this.write('info', `${label} prompt`, { ...meta, promptChars: prompt.length });
-        console.info(`[Fim:${this.scope}] ${label} prompt text:\n${prompt}`);
+        if (process.env.NODE_ENV === 'development') {
+            console.info(`[Fim:${this.scope}] ${label} prompt text:\n${prompt}`);
+        }
     }
 
     private write(level: FimLogLevel, message: string, meta?: FimLogMeta): void {

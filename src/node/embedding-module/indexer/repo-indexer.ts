@@ -1,15 +1,16 @@
-import * as fs from 'fs';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { IndexProgress, IndexState, IndexStatus } from '../../../common/embedding-types';
 import { normalizeCrlf } from '../../util/crlf';
 import { Chunker } from '../chunker/chunker';
 import { chunkId } from '../chunker/chunk-meta';
 import { languageIdForExtension } from '../chunker/language-registry';
-import { EmbedClient } from '../embed-client/llama-embed-client';
+import type { EmbedClient } from '../embed-client/llama-embed-client';
 import { Bm25Index } from '../vector-store/bm25-index';
-import { ChunkRecord, VectorStore } from '../vector-store/iface';
+import type { ChunkRecord, VectorStore } from '../vector-store/iface';
 import { IndexIgnore, MAX_FILE_BYTES } from './ignore';
-import { IndexMeta, IndexPersistence } from './persistence';
+import type { FileMeta, IndexMeta } from './persistence';
+import { IndexPersistence } from './persistence';
 
 const EMBED_BATCH = 32;
 
@@ -24,15 +25,6 @@ export interface IndexerServices {
 export interface IndexerCallbacks {
     onStatus?(status: IndexStatus): void;
     onProgress?(progress: IndexProgress): void;
-}
-
-function toPosix(p: string): string {
-    return p.split(path.sep).join('/');
-}
-
-function isInside(root: string, abs: string): boolean {
-    const rel = path.relative(root, abs);
-    return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
 /**
@@ -63,14 +55,7 @@ export class RepoIndexer {
     async rebuild(signal?: AbortSignal): Promise<void> {
         this.setState('indexing');
         try {
-            await this.services.store.init();
-            await this.services.store.clear();
-            this.services.bm25.clear();
-            this.meta = IndexPersistence.create(this.embedModel);
-            const files = await this.collectFiles(signal);
-            await this.indexBatch(files, signal);
-            await this.persistence.save(this.meta);
-            this.setState(signal?.aborted ? 'idle' : 'ready');
+            await this.rebuildFromScratch(signal);
         } catch (e) {
             this.setError(e);
         }
@@ -107,40 +92,75 @@ export class RepoIndexer {
         }
         this.setState('indexing');
         try {
-            this.meta = persisted;
-            await this.services.store.init();
-            this.services.bm25.clear();
-            try {
-                this.services.bm25.add(await this.services.store.getAll());
-            } catch {
-                /* если store пуст/недоступен — продолжим */
-            }
-            const files = await this.collectFiles(signal);
-            const currentSet = new Set(files.map(f => f.rel));
-            this.totalFiles = files.length;
-            this.filesIndexed = 0;
-            for (const f of files) {
-                if (signal?.aborted) {
-                    break;
-                }
-                if (await this.isChanged(f.abs, f.rel)) {
-                    await this.safeIndexFile(f.abs, f.rel, signal);
-                }
-                this.advance(f.rel);
-            }
-            for (const rel of Object.keys(this.meta.files)) {
-                if (!currentSet.has(rel)) {
-                    await this.removeFile(rel);
-                }
-            }
-            await this.persistence.save(this.meta);
-            this.setState(signal?.aborted ? 'idle' : 'ready');
+            await this.reconcilePersistedIndex(persisted, signal);
         } catch (e) {
             this.setError(e);
         }
     }
 
     // --- внутреннее ---
+
+    private async rebuildFromScratch(signal?: AbortSignal): Promise<void> {
+        await this.services.store.init();
+        await this.services.store.clear();
+        this.services.bm25.clear();
+        this.meta = IndexPersistence.create(this.embedModel);
+        const files = await this.collectFiles(signal);
+        await this.indexBatch(files, signal);
+        await this.persistence.save(this.meta);
+        this.setState(signal?.aborted ? 'idle' : 'ready');
+    }
+
+    private async reconcilePersistedIndex(persisted: IndexMeta, signal?: AbortSignal): Promise<void> {
+        this.meta = persisted;
+        await this.services.store.init();
+        await this.restoreBm25();
+        const files = await this.collectFiles(signal);
+        const currentSet = this.currentFileSet(files);
+        this.totalFiles = files.length;
+        this.filesIndexed = 0;
+        for (const file of files) {
+            if (signal?.aborted) {
+                break;
+            }
+            await this.reconcileFile(file, signal);
+            this.advance(file.rel);
+        }
+        await this.removeDeletedFiles(currentSet);
+        await this.persistence.save(this.meta);
+        this.setState(signal?.aborted ? 'idle' : 'ready');
+    }
+
+    private async restoreBm25(): Promise<void> {
+        this.services.bm25.clear();
+        try {
+            this.services.bm25.add(await this.services.store.getAll());
+        } catch {
+            /* если store пуст/недоступен — продолжим */
+        }
+    }
+
+    private currentFileSet(files: Array<{ abs: string; rel: string }>): Set<string> {
+        const currentSet = new Set<string>();
+        for (let i = 0; i < files.length; i++) {
+            currentSet.add(files[i].rel);
+        }
+        return currentSet;
+    }
+
+    private async reconcileFile(file: { abs: string; rel: string }, signal?: AbortSignal): Promise<void> {
+        if (await this.isChanged(file.abs, file.rel)) {
+            await this.safeIndexFile(file.abs, file.rel, signal);
+        }
+    }
+
+    private async removeDeletedFiles(currentSet: Set<string>): Promise<void> {
+        for (const rel of Object.keys(this.meta.files)) {
+            if (!currentSet.has(rel)) {
+                await this.removeFile(rel);
+            }
+        }
+    }
 
     private async indexBatch(files: Array<{ abs: string; rel: string }>, signal?: AbortSignal): Promise<void> {
         this.totalFiles = files.length;
@@ -221,7 +241,7 @@ export class RepoIndexer {
 
     private async removeFile(rel: string): Promise<void> {
         await this.removeFileChunks(rel);
-        delete this.meta.files[rel];
+        this.meta.files = omitFileMeta(this.meta.files, rel);
     }
 
     private async isChanged(abs: string, rel: string): Promise<boolean> {
@@ -292,4 +312,23 @@ export class RepoIndexer {
             error: e instanceof Error ? e.message : String(e),
         });
     }
+}
+
+function toPosix(p: string): string {
+    return p.split(path.sep).join('/');
+}
+
+function isInside(root: string, abs: string): boolean {
+    const rel = path.relative(root, abs);
+    return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+function omitFileMeta(files: Record<string, FileMeta>, target: string): Record<string, FileMeta> {
+    const next: Record<string, FileMeta> = {};
+    for (const filePath in files) {
+        if (filePath !== target) {
+            next[filePath] = files[filePath];
+        }
+    }
+    return next;
 }

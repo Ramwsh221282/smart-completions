@@ -23,6 +23,7 @@ export interface OrchestratorInput {
 @injectable()
 export class FimRetrievalOrchestrator {
     private readonly reranker = new FimRerankerClient();
+    // После вырожденных score-ов reranker считается broken до следующего configure, чтобы не штрафовать каждый hot request повторным fail-open.
     private rerankerBroken = false;
     private readonly channels: RetrievalChannel[];
 
@@ -101,6 +102,7 @@ export class FimRetrievalOrchestrator {
                 selected.push({ ...candidates[index], score: ranked[i].score });
             }
         }
+        // Если reranker вернул меньше top-N валидных индексов, добираем остаток merged-порядком, чтобы пайплайн оставался fail-open.
         let fallbackScore = selected.length > 0 ? selected[selected.length - 1].score : 0;
         for (let i = 0; i < candidates.length && selected.length < finalTopN; i++) {
             if (!used.has(i)) {

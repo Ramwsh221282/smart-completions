@@ -1,27 +1,7 @@
-import { connect, Connection, Table } from '@lancedb/lancedb';
-import { ChunkRecord, VectorHit, VectorStore } from './iface';
+import { connect, type Connection, type Table } from '@lancedb/lancedb';
+import type { ChunkRecord, VectorHit, VectorStore } from './iface';
 
 const TABLE = 'smart_completions_chunks';
-
-/** Нормализация к единичной длине (cosine-ранжирование). */
-function normalize(v: number[]): number[] {
-    let s = 0;
-    for (let i = 0; i < v.length; i++) {
-        const x = v[i];
-        s += x * x;
-    }
-    const n = Math.sqrt(s) || 1;
-    const out = new Array<number>(v.length);
-    for (let i = 0; i < v.length; i++) {
-        out[i] = v[i] / n;
-    }
-    return out;
-}
-
-/** Экранирование одинарных кавычек для SQL-предиката LanceDB. */
-function esc(s: string): string {
-    return s.replace(/'/g, "''");
-}
 
 interface Row {
     id: string;
@@ -83,7 +63,13 @@ export class LanceVectorStore implements VectorStore {
         if (records.length === 0) {
             return;
         }
-        const rows = records.map(r => this.toRow(r)) as unknown as Record<string, unknown>[];
+        const rows = new Array<Record<string, unknown>>(records.length);
+        const ids = new Array<string>(records.length);
+        for (let i = 0; i < records.length; i++) {
+            const record = records[i];
+            rows[i] = this.toRow(record) as unknown as Record<string, unknown>;
+            ids[i] = `'${esc(record.id)}'`;
+        }
         if (!this.table) {
             if (!this.conn) {
                 throw new Error('LanceVectorStore not initialized');
@@ -91,8 +77,7 @@ export class LanceVectorStore implements VectorStore {
             this.table = await this.conn.createTable(TABLE, rows);
             return;
         }
-        const ids = records.map(r => `'${esc(r.id)}'`).join(',');
-        await this.table.delete(`id IN (${ids})`);
+        await this.table.delete(`id IN (${ids.join(',')})`);
         await this.table.add(rows);
     }
 
@@ -140,4 +125,24 @@ export class LanceVectorStore implements VectorStore {
         this.table = undefined;
         this.conn = undefined;
     }
+}
+
+/** Нормализация к единичной длине (cosine-ранжирование). */
+function normalize(v: number[]): number[] {
+    let s = 0;
+    for (let i = 0; i < v.length; i++) {
+        const x = v[i];
+        s += x * x;
+    }
+    const n = Math.sqrt(s) || 1;
+    const out = new Array<number>(v.length);
+    for (let i = 0; i < v.length; i++) {
+        out[i] = v[i] / n;
+    }
+    return out;
+}
+
+/** Экранирование одинарных кавычек для SQL-предиката LanceDB. */
+function esc(s: string): string {
+    return s.replace(/'/g, "''");
 }

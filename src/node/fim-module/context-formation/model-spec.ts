@@ -1,101 +1,26 @@
-import { AIXCODER_TOKENS } from '../../../common/aixcoder/aixcoder-tokens';
-import { FimModelId, FimTemplateId, GenerationMode } from '../../../common/model-types';
-
-export interface FimTokenSet {
-    prefix: string;
-    suffix: string;
-    middle: string;
-    extraStops: string[];
-}
+import { getFimModule } from '../../../common/fim/fim-model-registry';
+import type { FimRepoFormat, FimTokenSet } from '../../../common/fim/fim-model-module';
+import type { FimModelId, FimTemplateId, GenerationMode } from '../../../common/model-types';
 
 export interface FimModelSpec {
     modelId: FimModelId;
     templateId: FimTemplateId;
     llamaModel: string;
     supportsRepoContext: boolean;
-    repoFormat?: 'file-sep' | 'comment' | 'aixcoder';
+    repoFormat: FimRepoFormat;
     tokens: FimTokenSet;
-    repoNameToken?: string;
-    fileToken?: string;
 }
 
-const QWEN_TOKENS: FimTokenSet = {
-    prefix: '<|fim_prefix|>',
-    suffix: '<|fim_suffix|>',
-    middle: '<|fim_middle|>',
-    extraStops: ['<|fim_pad|>', '<|endoftext|>', '<|file_sep|>', '<|repo_name|>'],
-};
-
-const DEEPSEEK_TOKENS: FimTokenSet = {
-    prefix: '<｜fim▁begin｜>',
-    suffix: '<｜fim▁hole｜>',
-    middle: '<｜fim▁end｜>',
-    extraStops: ['<｜end▁of▁sentence｜>', '<|endoftext|>'],
-};
-
-const GRANITE_TOKENS: FimTokenSet = {
-    prefix: '<|fim_prefix|>',
-    suffix: '<|fim_suffix|>',
-    middle: '<|fim_middle|>',
-    extraStops: ['<|fim_pad|>', '<|end_of_text|>', '<|endoftext|>', '<|filename|>', '<|reponame|>'],
-};
-
-const SPECS: Record<FimModelId, FimModelSpec> = {
-    'qwen2.5-coder': {
-        modelId: 'qwen2.5-coder',
-        templateId: 'qwen',
-        llamaModel: 'qwen2.5-coder',
-        supportsRepoContext: true,
-        repoFormat: 'file-sep',
-        tokens: QWEN_TOKENS,
-        repoNameToken: '<|repo_name|>',
-        fileToken: '<|file_sep|>',
-    },
-    omnicoder: {
-        modelId: 'omnicoder',
-        templateId: 'qwen',
-        llamaModel: 'omnicoder',
-        supportsRepoContext: true,
-        repoFormat: 'file-sep',
-        tokens: QWEN_TOKENS,
-        repoNameToken: '<|repo_name|>',
-        fileToken: '<|file_sep|>',
-    },
-    'deepseek-coder': {
-        modelId: 'deepseek-coder',
-        templateId: 'deepseek',
-        llamaModel: 'deepseek-coder',
-        supportsRepoContext: false,
-        tokens: DEEPSEEK_TOKENS,
-    },
-    'aixcoder-7b-v2': {
-        modelId: 'aixcoder-7b-v2',
-        templateId: 'aixcoder',
-        llamaModel: 'aixcoder-7b-v2',
-        supportsRepoContext: true,
-        repoFormat: 'aixcoder',
-        tokens: AIXCODER_TOKENS,
-    },
-    'granite-4.1-8b': {
-        modelId: 'granite-4.1-8b',
-        templateId: 'granite',
-        llamaModel: 'granite-4.1-8b',
-        supportsRepoContext: true,
-        repoFormat: 'comment',
-        tokens: GRANITE_TOKENS,
-    },
-    'granite-4.1-3b': {
-        modelId: 'granite-4.1-3b',
-        templateId: 'granite',
-        llamaModel: 'granite-4.1-3b',
-        supportsRepoContext: true,
-        repoFormat: 'comment',
-        tokens: GRANITE_TOKENS,
-    },
-};
-
 export function getFimModelSpec(modelId: FimModelId): FimModelSpec {
-    return SPECS[modelId];
+    const module = getFimModule(modelId);
+    return {
+        modelId: module.modelId,
+        templateId: module.templateId,
+        llamaModel: module.llamaModel,
+        supportsRepoContext: module.supportsRepoContext,
+        repoFormat: module.repoFormat,
+        tokens: module.tokens,
+    };
 }
 
 export function fimStopTokens(spec: FimModelSpec): string[] {
@@ -107,22 +32,5 @@ export function fimStopTokens(spec: FimModelSpec): string[] {
 }
 
 export function fimMaxTokens(spec: FimModelSpec, generationMode: GenerationMode): number {
-    if (spec.templateId === 'aixcoder') {
-        switch (generationMode) {
-            case 'line':
-                return 64;
-            case 'block':
-                return 512;
-            default:
-                return 256;
-        }
-    }
-    switch (generationMode) {
-        case 'line':
-            return 48;
-        case 'block':
-            return 384;
-        default:
-            return 160;
-    }
+    return getFimModule(spec.modelId).maxTokensForMode(generationMode);
 }

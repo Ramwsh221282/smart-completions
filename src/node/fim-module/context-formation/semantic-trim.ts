@@ -18,7 +18,9 @@ const CODE_BOUNDARY = /(?:^|\n)[\t ]*(?:export[\t ]+)?(?:default[\t ]+)?(?:async
 
 export function trimFimContext(prefix: string, suffix: string, options: TrimFimContextOptions): TrimmedFimContext {
     const reservedChars = options.reservedChars ?? 0;
+    // Repo-context съедает часть окна заранее, поэтому file-level prefix/suffix режем от остатка, а не от raw model context.
     const charBudget = Math.max(MIN_CONTEXT_CHARS, options.contextSize * CHARS_PER_TOKEN - reservedChars - 1024);
+    // Префикс получает больший кусок бюджета: FIM сильнее зависит от ближайшего левого контекста у курсора.
     const prefixBudget = Math.max(256, Math.floor(charBudget * 0.65));
     const suffixBudget = Math.max(128, charBudget - prefixBudget);
     return {
@@ -33,11 +35,13 @@ function trimPrefix(text: string, budget: number, fileMode: FileMode): string {
     }
     const tail = text.slice(-budget);
     if (fileMode === 'code') {
+        // Для кода стараемся начать с declaration boundary, чтобы не отдавать модели случайный середняк блока.
         const boundary = lastCodeBoundary(tail);
         if (boundary > 0 && boundary < tail.length - 32) {
             return tail.slice(boundary);
         }
     } else {
+        // Для prose лучше сохранять целый абзац, а не обрывок из середины текста.
         const paragraph = tail.search(/\n\s*\n/);
         if (paragraph >= 0 && paragraph < tail.length - 32) {
             return tail.slice(paragraph).replace(/^\n+/, '');

@@ -116,49 +116,32 @@ export class ZetaSyntaxRegionResolver {
             return undefined;
         }
         try {
-            const parser = await this.ensureParser(grammar);
-            const source = model.getValue();
-            const tree = parser.parse(source);
-            const cursorOffset = model.getOffsetAt(position);
-            const cursorNode = tree.rootNode.namedDescendantForIndex(cursorOffset, cursorOffset);
-            const windowNode = selectWindowNode(cursorNode);
-            const windowBounds = expandNodeToWholeLines(source, windowNode);
-            const primaryNode = selectEditableNode(cursorNode, windowNode);
-            const regionBounds = normalizeRegionBounds([
-                expandNodeToWholeLines(source, primaryNode),
-                ...collectSecondaryRegionBounds(tree.rootNode, model, diagnostics, windowNode, primaryNode),
-            ], windowBounds);
-            if (regionBounds.length === 0) {
-                return undefined;
-            }
-            const windowText = source.slice(windowBounds.start, windowBounds.end);
-            const relativeBounds = new Array<RegionBounds>(regionBounds.length);
-            for (let i = 0; i < regionBounds.length; i++) {
-                relativeBounds[i] = {
-                    start: regionBounds[i].start - windowBounds.start,
-                    end: regionBounds[i].end - windowBounds.start,
-                };
-            }
-            const windowStart = model.getPositionAt(windowBounds.start);
-            LOG.info('Zeta syntax window resolved', {
-                uri: model.uri.toString(),
-                grammar,
-                windowChars: windowText.length,
-                regions: relativeBounds.length,
-                windowStartLine: windowStart.lineNumber - 1,
-            });
-            return {
-                windowText,
-                windowStart: { line: windowStart.lineNumber - 1, character: windowStart.column - 1 },
-                cursorOffset: cursorOffset - windowBounds.start,
-                prefixText: source.slice(0, windowBounds.start),
-                suffixText: source.slice(windowBounds.end),
-                syntacticBounds: relativeBounds,
-            };
+            return this.resolveWindow(model, position, diagnostics, grammar);
         } catch (error) {
             LOG.warn('Zeta syntax region resolution failed', { uri: model.uri.toString(), languageId: model.getLanguageId(), error: error instanceof Error ? error.message : String(error) });
             return undefined;
         }
+    }
+
+    private async resolveWindow(
+        model: monaco.editor.ITextModel,
+        position: monaco.Position,
+        diagnostics: DiagnosticDTO[],
+        grammar: string,
+    ): Promise<ResolvedSyntaxWindow | undefined> {
+        const parser = await this.ensureParser(grammar);
+        const source = model.getValue();
+        const tree = parser.parse(source);
+        const cursorOffset = model.getOffsetAt(position);
+        const cursorNode = tree.rootNode.namedDescendantForIndex(cursorOffset, cursorOffset);
+        const windowNode = selectWindowNode(cursorNode);
+        const windowBounds = expandNodeToWholeLines(source, windowNode);
+        const primaryNode = selectEditableNode(cursorNode, windowNode);
+        const regionBounds = this.resolveRegionBounds(source, tree.rootNode, model, diagnostics, windowNode, primaryNode, windowBounds);
+        if (regionBounds.length === 0) {
+            return undefined;
+        }
+        return this.buildResolvedWindow(model, grammar, source, cursorOffset, windowBounds, regionBounds);
     }
 
     /** Инициализирует parser core один раз и выставляет выбранную grammar перед очередным parse. */
@@ -185,6 +168,55 @@ export class ZetaSyntaxRegionResolver {
             this.languages.set(grammar, language);
         }
         return language;
+    }
+
+    private resolveRegionBounds(
+        source: string,
+        root: Parser.SyntaxNode,
+        model: monaco.editor.ITextModel,
+        diagnostics: DiagnosticDTO[],
+        windowNode: Parser.SyntaxNode,
+        primaryNode: Parser.SyntaxNode,
+        windowBounds: RegionBounds,
+    ): RegionBounds[] {
+        return normalizeRegionBounds([
+            expandNodeToWholeLines(source, primaryNode),
+            ...collectSecondaryRegionBounds(source, root, model, diagnostics, windowNode, primaryNode),
+        ], windowBounds);
+    }
+
+    private buildResolvedWindow(
+        model: monaco.editor.ITextModel,
+        grammar: string,
+        source: string,
+        cursorOffset: number,
+        windowBounds: RegionBounds,
+        regionBounds: RegionBounds[],
+    ): ResolvedSyntaxWindow {
+        const windowText = source.slice(windowBounds.start, windowBounds.end);
+        const relativeBounds = new Array<RegionBounds>(regionBounds.length);
+        for (let i = 0; i < regionBounds.length; i++) {
+            relativeBounds[i] = {
+                start: regionBounds[i].start - windowBounds.start,
+                end: regionBounds[i].end - windowBounds.start,
+            };
+        }
+        const windowStart = model.getPositionAt(windowBounds.start);
+        LOG.info('Zeta syntax window resolved', {
+            uri: model.uri.toString(),
+            grammar,
+            windowChars: windowText.length,
+            regions: relativeBounds.length,
+            windowStartLine: windowStart.lineNumber - 1,
+        });
+        return {
+            windowText,
+            windowStart: { line: windowStart.lineNumber - 1, character: windowStart.column - 1 },
+            cursorOffset: cursorOffset - windowBounds.start,
+            prefixText: source.slice(0, windowBounds.start),
+            suffixText: source.slice(windowBounds.end),
+            syntacticBounds: relativeBounds,
+        };
     }
 }
 
@@ -214,12 +246,12 @@ function selectEditableNode(node: Parser.SyntaxNode, windowNode: Parser.SyntaxNo
     return windowNode;
 }
 
-function collectSecondaryRegionBounds(root: Parser.SyntaxNode, model: monaco.editor.ITextModel, diagnostics: DiagnosticDTO[], windowNode: Parser.SyntaxNode, primaryNode: Parser.SyntaxNode): RegionBounds[] {
+function collectSecondaryRegionBounds(source: string, root: Parser.SyntaxNode, model: monaco.editor.ITextModel, diagnostics: DiagnosticDTO[], windowNode: Parser.SyntaxNode, primaryNode: Parser.SyntaxNode): RegionBounds[] {
     if (diagnostics.length === 0) {
         return [];
     }
     const out: RegionBounds[] = [];
-    const primaryBounds = expandNodeToWholeLines(model.getValue(), primaryNode);
+    const primaryBounds = expandNodeToWholeLines(source, primaryNode);
     const windowLineStart = windowNode.startPosition.row;
     const windowLineEnd = windowNode.endPosition.row;
     for (let i = 0; i < diagnostics.length && out.length < MAX_SECONDARY_REGIONS; i++) {
@@ -234,7 +266,7 @@ function collectSecondaryRegionBounds(root: Parser.SyntaxNode, model: monaco.edi
         const offset = model.getOffsetAt({ lineNumber: line + 1, column: diagnostic.range.start.character + 1 });
         const node = root.namedDescendantForIndex(offset, offset);
         const candidate = selectEditableNode(node, windowNode);
-        const bounds = expandNodeToWholeLines(model.getValue(), candidate);
+        const bounds = expandNodeToWholeLines(source, candidate);
         if (!overlaps(bounds, primaryBounds)) {
             out.push(bounds);
         }

@@ -52,72 +52,24 @@ export class ZetaBackendService {
     /** Выполняет одно zeta21-предсказание: retrieval -> excerpts -> trim -> prompt -> llama.cpp -> multi-region parse. */
     async predict(request: ZetaRequest, token?: CancellationToken): Promise<ZetaResponse> {
         const startedAt = Date.now();
-        if (request.recentEdits.length === 0 || token?.isCancellationRequested) {
-            LOG.info('Zeta prediction skipped', { reason: request.recentEdits.length === 0 ? 'no recent edits' : 'cancelled' });
+        const skipReason = this.predictSkipReason(request, token);
+        if (skipReason !== undefined) {
+            LOG.info('Zeta prediction skipped', { reason: skipReason });
             return this.emptyResponse();
         }
         const abort = bridgeCancellation(token);
         try {
-            const windowText = normalizeCrlf(request.windowText);
-            const prefixText = normalizeCrlf(request.prefixText);
-            const suffixText = normalizeCrlf(request.suffixText);
-            const currentFilePath = this.filePathForUri(request.uri);
-            const neighbors = this.config.ragEnabled ? await this.retrieveNeighbors(request, windowText, abort.signal) : [];
-            const relatedFiles = await renderRelatedExcerpts(request.relatedFiles, neighbors, currentFilePath);
-            const trimmed = trimZetaContext({
-                profile: ZETA_PROFILE,
-                contextSize: this.config.contextSize,
-                prefixText,
-                windowText,
-                suffixText,
-                cursorOffset: request.cursorOffset,
-                regions: request.regions,
-                recentEdits: this.recentEditsForPrompt(request.recentEdits),
-                relatedFiles,
-                tokenCounter: this.tokenCounter,
-            }, ZETA_PROFILE.maxOutputTokens);
+            const normalized = this.normalizeRequest(request);
+            const neighbors = await this.loadNeighbors(request, normalized.windowText, abort.signal);
+            const relatedFiles = await this.loadRelatedFiles(request, neighbors, normalized.currentFilePath);
+            const trimmed = this.trimRequestContext(request, normalized, relatedFiles);
             if (trimmed.overflow) {
                 LOG.warn('Zeta prediction skipped because prompt overflowed', { requestId: request.requestId });
                 return this.emptyResponse();
             }
-            const built = buildZetaPrompt({
-                targetPath: currentFilePath,
-                prefixBeforeRegion: trimmed.prefixBeforeRegion,
-                windowText: trimmed.windowText,
-                suffixText: trimmed.suffixText,
-                cursorOffset: trimmed.cursorOffset,
-                regions: trimmed.regions,
-                relatedFiles: trimmed.relatedFiles,
-                editHistoryBlock: buildEditHistoryBlock(trimmed.recentEdits),
-            });
-            const rawText = await this.client.complete({
-                baseUrl: this.config.llamaUrl,
-                model: this.config.requestModelName,
-                prompt: built.prompt,
-                stop: built.stop,
-                maxTokens: ZETA_PROFILE.maxOutputTokens,
-                temperature: ZETA_PROFILE.temperature,
-                cachePrompt: true,
-                seed: 0,
-                signal: abort.signal,
-            });
-            const parsed = parseZetaCompletion({
-                rawText,
-                windowText: trimmed.windowText,
-                windowStart: shiftWindowStart(windowText, request.windowStart, trimmed.windowOffset),
-                regions: trimmed.regions,
-                stopTokens: built.stop,
-            });
-            LOG.info('Zeta prediction completed', {
-                requestId: request.requestId,
-                durationMs: Date.now() - startedAt,
-                edits: parsed.edits.length,
-                status: parsed.status,
-            });
-            if (parsed.edits.length === 0) {
-                return this.emptyResponse();
-            }
-            return this.successResponse(parsed.edits, parsed.primaryRange, parsed.jumpTo);
+            const built = this.buildPrompt(normalized.currentFilePath, trimmed);
+            const rawText = await this.completePrompt(built, abort.signal);
+            return this.parsePrediction(request, normalized.windowText, trimmed, built.stop, rawText, startedAt);
         } catch (error) {
             if (abort.signal.aborted || isAbortError(error)) {
                 LOG.info('Zeta prediction cancelled', { requestId: request.requestId });
@@ -128,6 +80,102 @@ export class ZetaBackendService {
         } finally {
             abort.dispose();
         }
+    }
+
+    private predictSkipReason(request: ZetaRequest, token?: CancellationToken): 'no recent edits' | 'cancelled' | undefined {
+        if (request.recentEdits.length === 0) {
+            return 'no recent edits';
+        }
+        return token?.isCancellationRequested ? 'cancelled' : undefined;
+    }
+
+    private normalizeRequest(request: ZetaRequest): NormalizedZetaRequest {
+        return {
+            windowText: normalizeCrlf(request.windowText),
+            prefixText: normalizeCrlf(request.prefixText),
+            suffixText: normalizeCrlf(request.suffixText),
+            currentFilePath: this.filePathForUri(request.uri),
+        };
+    }
+
+    private async loadNeighbors(request: ZetaRequest, windowText: string, signal?: AbortSignal): Promise<Neighbor[]> {
+        if (!this.config.ragEnabled) {
+            return [];
+        }
+        return this.retrieveNeighbors(request, windowText, signal);
+    }
+
+    private async loadRelatedFiles(request: ZetaRequest, neighbors: Neighbor[], currentFilePath: string) {
+        return renderRelatedExcerpts(request.relatedFiles, neighbors, currentFilePath);
+    }
+
+    private trimRequestContext(request: ZetaRequest, normalized: NormalizedZetaRequest, relatedFiles: Awaited<ReturnType<typeof renderRelatedExcerpts>>) {
+        return trimZetaContext({
+            profile: ZETA_PROFILE,
+            contextSize: this.config.contextSize,
+            prefixText: normalized.prefixText,
+            windowText: normalized.windowText,
+            suffixText: normalized.suffixText,
+            cursorOffset: request.cursorOffset,
+            regions: request.regions,
+            recentEdits: this.recentEditsForPrompt(request.recentEdits),
+            relatedFiles,
+            tokenCounter: this.tokenCounter,
+        }, ZETA_PROFILE.maxOutputTokens);
+    }
+
+    private buildPrompt(currentFilePath: string, trimmed: ReturnType<typeof trimZetaContext>) {
+        return buildZetaPrompt({
+            targetPath: currentFilePath,
+            prefixBeforeRegion: trimmed.prefixBeforeRegion,
+            windowText: trimmed.windowText,
+            suffixText: trimmed.suffixText,
+            cursorOffset: trimmed.cursorOffset,
+            regions: trimmed.regions,
+            relatedFiles: trimmed.relatedFiles,
+            editHistoryBlock: buildEditHistoryBlock(trimmed.recentEdits),
+        });
+    }
+
+    private async completePrompt(built: ReturnType<typeof buildZetaPrompt>, signal?: AbortSignal): Promise<string> {
+        return this.client.complete({
+            baseUrl: this.config.llamaUrl,
+            model: this.config.requestModelName,
+            prompt: built.prompt,
+            stop: built.stop,
+            maxTokens: ZETA_PROFILE.maxOutputTokens,
+            temperature: ZETA_PROFILE.temperature,
+            cachePrompt: true,
+            seed: 0,
+            signal,
+        });
+    }
+
+    private parsePrediction(
+        request: ZetaRequest,
+        windowText: string,
+        trimmed: ReturnType<typeof trimZetaContext>,
+        stopTokens: string[],
+        rawText: string,
+        startedAt: number,
+    ): ZetaResponse {
+        const parsed = parseZetaCompletion({
+            rawText,
+            windowText: trimmed.windowText,
+            windowStart: shiftWindowStart(windowText, request.windowStart, trimmed.windowOffset),
+            regions: trimmed.regions,
+            stopTokens,
+        });
+        LOG.info('Zeta prediction completed', {
+            requestId: request.requestId,
+            durationMs: Date.now() - startedAt,
+            edits: parsed.edits.length,
+            status: parsed.status,
+        });
+        if (parsed.edits.length === 0) {
+            return this.emptyResponse();
+        }
+        return this.successResponse(parsed.edits, parsed.primaryRange, parsed.jumpTo);
     }
 
     /** Выполняет RAG-retrieval по edit-сигналам и пропускает embedding-вызов, если query пустой или topN выключен. */
@@ -212,6 +260,13 @@ export class ZetaBackendService {
             modelId: ZETA_PROFILE.id,
         };
     }
+}
+
+interface NormalizedZetaRequest {
+    windowText: string;
+    prefixText: string;
+    suffixText: string;
+    currentFilePath: string;
 }
 
 function defaultZetaConfig(): ZetaConfig {

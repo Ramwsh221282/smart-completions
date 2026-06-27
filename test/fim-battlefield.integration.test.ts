@@ -17,7 +17,7 @@ const REPO = process.env.SC_BATTLE_REPO ?? '';
 const EMBED_URL = process.env.SC_EMBED_URL ?? 'http://127.0.0.1:8040/v1';
 const FIM_URL = process.env.SC_FIM_URL ?? 'http://127.0.0.1:8020/v1';
 const RERANK_URL = process.env.SC_RERANK_URL ?? 'http://127.0.0.1:8030/v1';
-const FIM_TOKENS = /<\|(fim_prefix|fim_suffix|fim_middle|fim_pad|repo_name|file_sep|filename|reponame|endoftext|end_of_text)\|>|<｜fim▁(begin|hole|end)｜>|<\/s>|▁<AIX-SPAN-(PRE|POST|MIDDLE)>/;
+const FIM_TOKENS = /<\|(fim_prefix|fim_suffix|fim_middle|fim_pad|repo_name|file_sep|filename|reponame|endoftext|end_of_text)\|>|<｜fim▁(begin|hole|end)｜>|<\[(fim-(suffix|prefix|middle)|end▁of▁sentence)\]>|<\/s>|▁<AIX-SPAN-(PRE|POST|MIDDLE)>/;
 
 test('FIM battlefield: isolated index rebuilds and drives repo prompt round-trip', { skip: !ENABLED && 'set SC_BATTLE_IT=1 to run', timeout: 1800000 }, async () => {
     const storageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fim-lancedb-'));

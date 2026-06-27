@@ -1,19 +1,20 @@
-import * as path from 'path';
-import { fileURLToPath } from 'url';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
-    EmbeddingConfig,
-    IndexProgress,
-    IndexStatus,
-    Neighbor,
-    ConnTarget,
-    TestResult,
+    type EmbeddingConfig,
+    type IndexProgress,
+    type IndexStatus,
+    type Neighbor,
+    type ConnTarget,
+    type TestResult,
 } from '../../common/embedding-types';
 import { Chunker } from './chunker/chunker';
 import { Bm25Index } from './vector-store/bm25-index';
-import { VectorStore } from './vector-store/iface';
+import type { VectorStore } from './vector-store/iface';
 import { LanceVectorStore } from './vector-store/lancedb-store';
 import { ChromaVectorStore } from './vector-store/chromadb-store';
-import { EmbedClient, LlamaEmbedClient } from './embed-client/llama-embed-client';
+import type { EmbedClient } from './embed-client/llama-embed-client';
+import { LlamaEmbedClient } from './embed-client/llama-embed-client';
 import { HybridRetriever } from './retriever/hybrid-retriever';
 import { RepoIndexer } from './indexer/repo-indexer';
 import { IndexPersistence } from './indexer/persistence';
@@ -45,21 +46,11 @@ export interface EmbeddingServiceCallbacks {
     onProgress?(progress: IndexProgress): void;
 }
 
-function uriToFsPath(uri: string): string {
-    try {
-        return uri.startsWith('file:') ? fileURLToPath(uri) : uri;
-    } catch {
-        return uri;
-    }
-}
-
 /**
  * Ядро embedding-module: связывает store/bm25/embed/retriever/indexer по конфигу.
  * Чистый Node-класс (без @theia) — тестируется с дублёрами store/embed.
  */
 export class EmbeddingService {
-    private config: EmbeddingConfig | undefined;
-    private roots: string[] = [];
     private readonly chunker = new Chunker();
     private bm25 = new Bm25Index();
     private store: VectorStore | undefined;
@@ -75,27 +66,14 @@ export class EmbeddingService {
 
     /** Применить конфиг и (пере)собрать пайплайн. roots — fs-пути корней воркспейса. */
     async configure(config: EmbeddingConfig, roots: string[]): Promise<void> {
-        this.config = config;
-        this.roots = roots;
-        // Изоляция хранилища по воркспейсу (детерминированный подкаталог по корням).
-        const workspaceDir = path.join(this.deps.storageDir, md5(roots.join('|') || 'default'));
-        this.embed = (this.deps.createEmbedClient ?? defaultCreateEmbedClient)(config);
-        this.store = (this.deps.createStore ?? defaultCreateStore)(config, workspaceDir);
+        const workspaceDir = this.workspaceDir(roots);
+        const embed = this.createEmbedClient(config);
+        const store = this.createStore(config, workspaceDir);
+        this.embed = embed;
+        this.store = store;
         this.bm25 = new Bm25Index();
-        this.retriever = new HybridRetriever(this.store, this.bm25, this.embed);
-        this.indexer = new RepoIndexer(
-            roots,
-            { chunker: this.chunker, embed: this.embed, store: this.store, bm25: this.bm25, transformDocumentText: this.deps.transformDocumentText },
-            new IndexPersistence(path.join(workspaceDir, 'index-meta.json')),
-            config.embedModel,
-            {
-                onStatus: s => {
-                    this.status = s;
-                    this.callbacks.onStatus?.(s);
-                },
-                onProgress: p => this.callbacks.onProgress?.(p),
-            },
-        );
+        this.retriever = this.createRetriever(store, embed);
+        this.indexer = this.createIndexer(config, roots, workspaceDir, store, embed);
     }
 
     /** Фоновый старт: восстановление с диска + reconcile (или полный rebuild). */
@@ -139,6 +117,63 @@ export class EmbeddingService {
 
     async dispose(): Promise<void> {
         await this.store?.dispose();
+    }
+
+    private workspaceDir(roots: string[]): string {
+        // Изоляция хранилища по воркспейсу (детерминированный подкаталог по корням).
+        return path.join(this.deps.storageDir, md5(roots.join('|') || 'default'));
+    }
+
+    private createEmbedClient(config: EmbeddingConfig): EmbedClient {
+        return (this.deps.createEmbedClient ?? defaultCreateEmbedClient)(config);
+    }
+
+    private createStore(config: EmbeddingConfig, workspaceDir: string): VectorStore {
+        return (this.deps.createStore ?? defaultCreateStore)(config, workspaceDir);
+    }
+
+    private createRetriever(store: VectorStore, embed: EmbedClient): HybridRetriever {
+        return new HybridRetriever(store, this.bm25, embed);
+    }
+
+    private createIndexer(
+        config: EmbeddingConfig,
+        roots: string[],
+        workspaceDir: string,
+        store: VectorStore,
+        embed: EmbedClient,
+    ): RepoIndexer {
+        return new RepoIndexer(
+            roots,
+            {
+                chunker: this.chunker,
+                embed,
+                store,
+                bm25: this.bm25,
+                transformDocumentText: this.deps.transformDocumentText,
+            },
+            new IndexPersistence(path.join(workspaceDir, 'index-meta.json')),
+            config.embedModel,
+            this.indexerCallbacks(),
+        );
+    }
+
+    private indexerCallbacks(): EmbeddingServiceCallbacks {
+        return {
+            onStatus: status => {
+                this.status = status;
+                this.callbacks.onStatus?.(status);
+            },
+            onProgress: progress => this.callbacks.onProgress?.(progress),
+        };
+    }
+}
+
+function uriToFsPath(uri: string): string {
+    try {
+        return uri.startsWith('file:') ? fileURLToPath(uri) : uri;
+    } catch {
+        return uri;
     }
 }
 

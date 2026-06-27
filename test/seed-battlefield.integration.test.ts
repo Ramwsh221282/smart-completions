@@ -3,7 +3,6 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
-import { AIX_SPAN_PRE } from '../src/common/aixcoder/aixcoder-tokens';
 import type { EmbeddingConfig } from '../src/common/embedding-types';
 import type { FimRetrievalConfig } from '../src/common/fim-types';
 import { FimEmbeddingIndexService } from '../src/node/fim-module/embedding/fim-embedding-index-service';
@@ -12,15 +11,15 @@ import { LlamaFimClient } from '../src/node/fim-module/model-call/llama-fim-clie
 import { postprocessFimCompletion } from '../src/node/fim-module/model-call/postprocess';
 import type { RetrievalChannel } from '../src/node/fim-module/retrieval/fim-retrieval-channel';
 import { FimRetrievalOrchestrator } from '../src/node/fim-module/retrieval/fim-retrieval-orchestrator';
-import { verifyAixcoderSpecialTokens } from '../src/node/aixcoder/aixcoder-token-healthcheck';
-import { resetAixcoderLanceDb } from './helpers/aixcoder-lancedb-reset';
+import { verifySeedSpecialTokens } from '../src/node/seedcoder/seed-token-healthcheck';
+import { resetSeedLanceDb } from './helpers/seed-lancedb-reset';
 
 const ENABLED = process.env.SC_BATTLE_IT === '1';
 const REPO = process.env.SC_BATTLE_REPO ?? '';
 const EMBED_URL = process.env.SC_EMBED_URL ?? 'http://127.0.0.1:8040/v1';
-const FIM_URL = process.env.SC_AIX_URL ?? process.env.SC_FIM_URL ?? 'http://127.0.0.1:8020/v1';
+const SEED_URL = process.env.SC_SEED_URL ?? 'http://127.0.0.1:8020/v1';
 const RERANK_URL = process.env.SC_RERANK_URL ?? 'http://127.0.0.1:8030/v1';
-const LEAKED_TOKENS = /<\|(fim_prefix|fim_suffix|fim_middle|fim_pad|repo_name|file_sep|filename|reponame|endoftext|end_of_text)\|>|<｜fim▁(begin|hole|end)｜>|<\[(fim-(suffix|prefix|middle)|end▁of▁sentence)\]>|<\/s>|▁<AIX-SPAN-(PRE|POST|MIDDLE)>/;
+const FIM_TOKENS = /<\|(fim_prefix|fim_suffix|fim_middle|fim_pad|repo_name|file_sep|filename|reponame|endoftext|end_of_text)\|>|<｜fim▁(begin|hole|end)｜>|<\[(fim-(suffix|prefix|middle)|end▁of▁sentence)\]>|<\/s>|▁<AIX-SPAN-(PRE|POST|MIDDLE)>/;
 
 const BATTLE_EMBED_CONFIG: EmbeddingConfig = {
     embedModel: 'ignored-by-fim-profile',
@@ -42,9 +41,9 @@ beforeEach(async () => {
         return;
     }
     if (!storageDir) {
-        storageDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'sc-aixcoder-battle-'));
+        storageDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'sc-seed-battle-'));
     }
-    service = await resetAixcoderLanceDb({
+    service = await resetSeedLanceDb({
         storageDir,
         roots: [REPO],
         config: BATTLE_EMBED_CONFIG,
@@ -62,75 +61,91 @@ afterEach(async () => {
 });
 
 test(
-    'aiXcoder battlefield: isolated qwen3 index rebuild drives PSM repo prompt round-trip',
+    'Seed battlefield: isolated qwen3 index rebuild drives SPM repo prompt round-trip',
     {
         skip: (!ENABLED && 'set SC_BATTLE_IT=1 to run') || (!REPO && 'set SC_BATTLE_REPO to the test repo path'),
         timeout: 1800000,
     },
     async () => {
         assert.ok(fs.existsSync(REPO), `SC_BATTLE_REPO does not exist: ${REPO}`);
-        assert.ok(service, 'beforeEach created a fresh aiXcoder embedding index');
-        assert.equal(await verifyAixcoderSpecialTokens(FIM_URL), true);
-
+        assert.ok(service, 'beforeEach created a fresh Seed embedding index');
+        const reportFile = path.join(process.cwd(), 'test_results', `seed-battlefield-${Date.now()}.md`);
+        const specialTokensOk = await verifySeedSpecialTokens(SEED_URL);
+        assert.equal(specialTokensOk, true, 'seed GGUF must preserve FIM special tokens');
         const orchestrator = new FimRetrievalOrchestrator([createSemanticChannel(service)]);
+        const startedAt = Date.now();
         const neighbors = await orchestrator.retrieve({
-            query: 'renderAixcoderPrompt buildAixcoderHeader buildAixcoderEditSnippets',
+            query: 'renderSeedPrompt verifySeedSpecialTokens lineCommentForLanguage',
             fileMode: 'code',
             signals: {
-                cursorSymbol: 'renderAixcoderPrompt',
-                renamedSymbols: ['buildAixcoderHeader', 'buildAixcoderEditSnippets'],
+                cursorSymbol: 'renderSeedPrompt',
+                renamedSymbols: ['verifySeedSpecialTokens', 'lineCommentForLanguage'],
                 diagnosticSymbols: [],
-                importedSymbols: ['renderAixcoderPrompt'],
+                importedSymbols: ['renderSeedPrompt'],
             },
-            fuzzySymbols: ['renderAixcoderPrompt', 'buildAixcoderHeader', 'buildAixcoderEditSnippets'],
+            fuzzySymbols: ['renderSeedPrompt', 'verifySeedSpecialTokens', 'lineCommentForLanguage'],
             topN: 3,
         }, battleRetrievalConfig());
         const prompt = buildFimPrompt({
-            modelId: 'aixcoder-7b-v2',
+            modelId: 'seed-coder-8b',
             languageId: 'typescript',
             fileMode: 'code',
-            prefix: 'export function renderPrompt(): string {\n    return buildFimPrompt(',
+            prefix: 'export function renderPrompt(): string {\n    return renderSeedPrompt(',
             suffix: '\n}',
             generationMode: 'multiline',
-            contextSize: 8192,
-            filePath: 'src/aixcoder-battle.ts',
+            contextSize: 32768,
+            filePath: 'src/seed-battle.ts',
             neighbors,
             recentEdits: [{
-                uri: 'src/common/aixcoder/aixcoder-prompt-builder.ts',
-                before: 'return blocks.join("");\n',
-                after: 'return blocks.join("").trimEnd();\n',
-                unifiedDiff: '@@ -1,1 +1,1 @@\n-return blocks.join("");\n+return blocks.join("").trimEnd();',
+                uri: 'src/common/seedcoder/seed-prompt-builder.ts',
+                before: 'return blocks.join("\\n");\n',
+                after: 'return blocks.join("\\n").trim();\n',
+                unifiedDiff: '@@ -1,1 +1,1 @@\n-return blocks.join("\\n");\n+return blocks.join("\\n").trim();',
                 timestamp: 1,
             }],
         });
         const client = new LlamaFimClient();
         const raw = await client.complete({
-            baseUrl: FIM_URL,
+            baseUrl: SEED_URL,
             model: prompt.llamaModel,
             prompt: prompt.prompt,
             stop: prompt.stop,
             maxTokens: prompt.maxTokens,
-            temperature: 0,
+            temperature: 0.05,
         });
         const text = postprocessFimCompletion(raw, { suffix: '\n}', generationMode: 'multiline', stopTokens: prompt.stop });
+        const leakedTokens = FIM_TOKENS.test(text);
+        const latencyMs = Date.now() - startedAt;
 
-        assert.ok(prompt.prompt.startsWith(AIX_SPAN_PRE), 'aiXcoder prompt starts with AIX-SPAN PRE');
-        assert.ok(prompt.prompt.includes('# the file path is: src/aixcoder-battle.ts'), 'aiXcoder prompt keeps the current file header');
-        assert.ok(prompt.prompt.includes('# the file path is: src/common/aixcoder/aixcoder-prompt-builder.ts'), 'aiXcoder prompt keeps recent edits in repo context');
-        assert.ok(text.length > 0, 'expected a non-empty aiXcoder completion');
-        assert.ok(!LEAKED_TOKENS.test(text), `completion leaked aiXcoder tokens: ${JSON.stringify(text)}`);
+        assert.ok(prompt.prompt.startsWith('<[fim-suffix]>'), 'Seed repo prompt starts with the suffix token in SPM order');
+        assert.ok(prompt.prompt.includes('// edit_history src/common/seedcoder/seed-prompt-builder.ts'), 'Seed prompt keeps recent edits inside the stuffed prefix');
+        assert.ok(prompt.prompt.includes('// src/seed-battle.ts\n'), 'Seed prompt appends the current file as the last stuffed block');
+        assert.ok(text.length > 0, 'expected a non-empty Seed completion');
+        assert.ok(!leakedTokens, `completion leaked FIM tokens: ${JSON.stringify(text)}`);
+
+        await fs.promises.mkdir(path.dirname(reportFile), { recursive: true });
+        await fs.promises.writeFile(reportFile, [
+            '# Seed Battlefield',
+            '',
+            `- repo: ${REPO}`,
+            `- latencyMs: ${latencyMs}`,
+            `- promptChars: ${prompt.prompt.length}`,
+            `- neighborCount: ${neighbors.length}`,
+            `- leakedTokens: ${leakedTokens}`,
+            `- specialTokensOk: ${specialTokensOk}`,
+        ].join('\n'));
     },
 );
 
 test(
-    'aiXcoder battlefield: beforeEach reset recreates a clean qwen3-backed index',
+    'Seed battlefield: beforeEach reset recreates a clean qwen3-backed seed index',
     {
         skip: (!ENABLED && 'set SC_BATTLE_IT=1 to run') || (!REPO && 'set SC_BATTLE_REPO to the test repo path'),
         timeout: 600000,
     },
     async () => {
-        assert.ok(service, 'beforeEach created a fresh aiXcoder embedding index');
-        const neighbors = await service.retrieve('AIX-SPAN prompt context', 3);
+        assert.ok(service, 'beforeEach created a fresh Seed embedding index');
+        const neighbors = await service.retrieve('seed comment stuffing prefix context', 3);
 
         assert.deepEqual(service.workspaceRoots, [REPO]);
         assert.deepEqual(service.getRetrievalOptions(), { topN: 3, prefixTailChars: 400 });

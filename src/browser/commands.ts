@@ -44,9 +44,23 @@ export class SmartCompletionsCommands implements CommandContribution, Keybinding
     @inject(NesController) private readonly nesController!: NesController;
 
     registerCommands(registry: CommandRegistry): void {
+        this.registerFimCommands(registry);
+        this.registerNesCommands(registry);
+        this.registerIndexCommands(registry);
+    }
+
+    registerKeybindings(registry: KeybindingRegistry): void {
+        this.registerFimKeybindings(registry);
+        this.registerNesKeybindings(registry);
+    }
+
+    private registerFimCommands(registry: CommandRegistry): void {
         registry.registerCommand(FimAcceptCommand, {
             execute: async () => this.monacoEditors.current?.runAction('editor.action.inlineSuggest.commit'),
         });
+    }
+
+    private registerNesCommands(registry: CommandRegistry): void {
         registry.registerCommand(NesAcceptCommand, {
             execute: () => this.nesController.accept(),
         });
@@ -56,6 +70,9 @@ export class SmartCompletionsCommands implements CommandContribution, Keybinding
         registry.registerCommand(NesJumpOrAcceptCommand, {
             execute: () => this.nesController.jumpOrAccept(),
         });
+    }
+
+    private registerIndexCommands(registry: CommandRegistry): void {
         registry.registerCommand(RebuildIndexCommand, {
             execute: async () => {
                 await this.indexService.rebuild();
@@ -72,12 +89,15 @@ export class SmartCompletionsCommands implements CommandContribution, Keybinding
         });
     }
 
-    registerKeybindings(registry: KeybindingRegistry): void {
+    private registerFimKeybindings(registry: KeybindingRegistry): void {
         registry.registerKeybinding({
             command: FimAcceptCommand.id,
             keybinding: 'tab',
             when: 'inlineSuggestionVisible && !editorReadonly',
         });
+    }
+
+    private registerNesKeybindings(registry: KeybindingRegistry): void {
         registry.registerKeybinding({
             command: NesJumpOrAcceptCommand.id,
             keybinding: 'alt+tab',

@@ -18,7 +18,10 @@ import {
 } from '../common/protocol';
 import { EmbeddingIndexClientImpl } from './embedding/index-client';
 
-/** Привязка RPC-прокси embedding-сервиса (electron-aware ServiceConnectionProvider). */
+/**
+ * Embedding proxy держит отдельный client-side callback object, потому что backend
+ * пушит progress/status события обратно в frontend по тому же RPC-каналу.
+ */
 export function bindEmbeddingProxy(bind: interfaces.Bind): void {
     bind(EmbeddingIndexClientImpl).toSelf().inSingletonScope();
     bind(EmbeddingIndexClient).toService(EmbeddingIndexClientImpl);
@@ -32,7 +35,7 @@ export function bindEmbeddingProxy(bind: interfaces.Bind): void {
         .inSingletonScope();
 }
 
-/** Привязка RPC-прокси FIM backend-сервиса. */
+/** FIM proxy остаётся простым request/response биндингом без обратного client-канала. */
 export function bindFimProxy(bind: interfaces.Bind): void {
     bind(FimBackendService)
         .toDynamicValue(ctx => {
@@ -42,7 +45,7 @@ export function bindFimProxy(bind: interfaces.Bind): void {
         .inSingletonScope();
 }
 
-/** Привязка RPC-прокси NES backend-сервиса. */
+/** NES proxy идёт отдельным каналом, чтобы не смешивать lifecycle FIM и edit-suggestion backend paths. */
 export function bindNesProxy(bind: interfaces.Bind): void {
     bind(NesBackendService)
         .toDynamicValue(ctx => {
@@ -52,7 +55,7 @@ export function bindNesProxy(bind: interfaces.Bind): void {
         .inSingletonScope();
 }
 
-/** Привязка RPC-прокси Zeta backend-сервиса. */
+/** Zeta proxy отделён от legacy NES path, потому что у zeta21 свой backend pipeline и wire format. */
 export function bindZetaProxy(bind: interfaces.Bind): void {
     bind(ZetaBackendService)
         .toDynamicValue(ctx => {
@@ -62,7 +65,7 @@ export function bindZetaProxy(bind: interfaces.Bind): void {
         .inSingletonScope();
 }
 
-/** Привязка RPC-прокси Sweep CodeGraph backend-сервиса. */
+/** Sweep graph proxy живёт отдельно от inference-сервисов, потому что его lifecycle зависит от workspace indexing, а не от model requests. */
 export function bindSweepGraphProxy(bind: interfaces.Bind): void {
     bind(SweepGraphService)
         .toDynamicValue(ctx => {

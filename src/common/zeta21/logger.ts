@@ -44,7 +44,9 @@ export class ZetaLogger {
     /** Печатает полный промпт отдельной записью, чтобы training-format можно было быстро скопировать и проверить. */
     prompt(label: string, prompt: string, meta?: ZetaLogMeta): void {
         this.write('info', `${label} prompt`, { ...meta, promptChars: prompt.length });
-        console.info(`[Zeta:${this.scope}] ${label} prompt text:\n${prompt}`);
+        if (process.env.NODE_ENV === 'development') {
+            console.info(`[Zeta:${this.scope}] ${label} prompt text:\n${prompt}`);
+        }
     }
 
     /** Форматирует одну запись и отправляет её в подходящий console-метод, сохраняя payload раскрываемым в DevTools. */

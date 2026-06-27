@@ -1,0 +1,6 @@
+<[fim-suffix]>;<[fim-prefix]>// src/worse.ts
+export const worse = 1;
+// src/best.ts
+export const best = 2;
+// src/current.ts
+const value = <[fim-middle]>

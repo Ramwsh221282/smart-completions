@@ -22,20 +22,20 @@ export interface VectorHit {
  * Реализации: lancedb-store.ts, chromadb-store.ts.
  */
 export interface VectorStore {
-    /** Инициализация (подключение/создание коллекции). */
+    /** Готовит физическое хранилище к запросам и индексации. */
     init(): Promise<void>;
-    /** Идемпотентный upsert (по id). */
+    /** Принимает уже вычисленные чанки и заменяет записи с теми же id без внешней дедупликации. */
     upsert(records: ChunkRecord[]): Promise<void>;
-    /** Удалить все чанки файла (перед переиндексацией файла). */
+    /** Удаляет все чанки файла перед его переиндексацией или при удалении файла из индекса. */
     removeByFile(filePath: string): Promise<void>;
-    /** Векторный (cosine) поиск top-k. */
+    /** Возвращает top-k соседей в том же score-space, который дальше сливается с BM25/RRF. */
     vectorSearch(queryVector: number[], k: number): Promise<VectorHit[]>;
-    /** Все записи (для восстановления in-memory BM25 при reconcile). vector можно не возвращать. */
+    /** Отдаёт все записи для восстановления in-memory BM25 после reconcile/reopen; vector можно опустить. */
     getAll(): Promise<ChunkRecord[]>;
-    /** Число чанков. */
+    /** Нужен главным образом для диагностики и тестов готовности индекса. */
     count(): Promise<number>;
-    /** Очистить хранилище. */
+    /** Полностью сбрасывает физическое содержимое индекса без смены backend-конфигурации. */
     clear(): Promise<void>;
-    /** Освободить ресурсы. */
+    /** Освобождает process-local ресурсы/handles; persisted data может остаться на диске. */
     dispose(): Promise<void>;
 }

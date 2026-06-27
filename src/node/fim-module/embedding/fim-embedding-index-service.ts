@@ -42,6 +42,7 @@ export class FimEmbeddingIndexService {
 
     async retrieve(queryText: string, topN: number, signal?: AbortSignal): Promise<Neighbor[]> {
         const profile = this.profile();
+        // Асимметричные FIM-эмбеддеры кодируют query отдельно от documents, поэтому vector branch получает уже профилированный query input.
         return this.service?.retrieve(queryText, topN, signal, buildQueryInput(profile, queryText)) ?? [];
     }
 
@@ -63,6 +64,7 @@ export class FimEmbeddingIndexService {
             return;
         }
         await this.service?.dispose();
+        // FIM держит отдельный embedding-space по embedder profile, потому что query/document transforms и dimensionality могут отличаться от общего repo индекса.
         this.service = new EmbeddingService({
             storageDir: resolveFimEmbeddingStorageDir(this.embedderId),
             createEmbedClient: config => this.createEmbedClient(config),
@@ -98,9 +100,12 @@ class FimProfiledEmbedClient implements EmbedClient {
 
     async embed(inputs: string[], signal?: AbortSignal): Promise<number[][]> {
         const vectors = await this.client.embed(inputs, signal);
+        if (this.embedderProfile.matryoshkaDim === null) {
+            return vectors;
+        }
         const out = new Array<number[]>(vectors.length);
         for (let i = 0; i < vectors.length; i++) {
-            out[i] = Array.from(applyMatryoshka(this.embedderProfile, Float32Array.from(vectors[i])));
+            out[i] = projectVector(this.embedderProfile, vectors[i]);
         }
         return out;
     }
@@ -110,4 +115,8 @@ function resolveFimEmbeddingStorageDir(embedderId: string): string {
     const root = process.env.SC_FIM_STORAGE_DIR
         ?? path.join(os.homedir(), '.theia', 'smart-completions', 'fim-embedding');
     return path.join(root, embedderId);
+}
+
+function projectVector(embedderProfile: ReturnType<typeof getFimEmbedderProfile>, vector: number[]): number[] {
+    return Array.from(applyMatryoshka(embedderProfile, Float32Array.from(vector)));
 }

@@ -5,7 +5,10 @@ import { IndexStatus } from '../../common/embedding-types';
 
 const ITEM_ID = 'smart-completions-index';
 
-/** Элемент статус-бара: состояние индекса (idle/indexing/ready/error). */
+/**
+ * Статус-бар показывает состояние индекса без открытия отдельной view, чтобы long-running
+ * reconcile/rebuild был заметен прямо во время редактирования и не казался "тихим зависанием".
+ */
 @injectable()
 export class SmartCompletionsStatusBar implements FrontendApplicationContribution {
     @inject(StatusBar) private readonly statusBar!: StatusBar;
