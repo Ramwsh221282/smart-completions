@@ -5,9 +5,10 @@ use core_ipc::{
     decode_client_frame, decode_server_frame, encode_client_frame, encode_server_frame,
     read_client_frame, read_server_frame, serve_connection, write_client_frame, ClientFrame,
     ConnectionEnd, FrameHandler, HandlerOutcome, ServerFrame, WireCompletionRequest,
-    WireInitialDocument, WireShutdown,
+    WireDiagnostic, WireDiagnosticSeverity, WireDocumentKind, WireInitialDocument, WireOutlineItem,
+    WireRelatedFileHint, WireShutdown, WireSignals,
 };
-use core_types::{CompletionMode, FileMode, Position};
+use core_types::{CompletionMode, FileMode, Position, Range};
 
 struct DoneHandler;
 
@@ -26,20 +27,72 @@ impl FrameHandler for DoneHandler {
 }
 
 fn completion(request_id: u64) -> ClientFrame {
-    ClientFrame::CompletionRequest(WireCompletionRequest {
+    ClientFrame::CompletionRequest(Box::new(WireCompletionRequest {
         request_id,
         mode: CompletionMode::Fim,
         model_id: "qwen2.5-coder".to_string(),
         uri: "file:///a.ts".to_string(),
         version: 1,
+        language_id: "typescript".to_string(),
         file_mode: FileMode::Code,
         cursor: Position {
             line: 0,
             column: 0,
             offset: 0,
         },
+        editable_region: Some(Range {
+            start_line: 0,
+            start_col: 0,
+            end_line: 0,
+            end_col: 5,
+        }),
+        recent_edit_uris: vec!["file:///a.ts".to_string(), "file:///b.ts".to_string()],
+        diagnostics: vec![WireDiagnostic {
+            range: Range {
+                start_line: 0,
+                start_col: 0,
+                end_line: 0,
+                end_col: 1,
+            },
+            severity: WireDiagnosticSeverity::Warning,
+            message: "warn".to_string(),
+            code: Some("W1".to_string()),
+        }],
+        outline: vec![WireOutlineItem {
+            name: "demo".to_string(),
+            kind: "function".to_string(),
+            range: Range {
+                start_line: 0,
+                start_col: 0,
+                end_line: 2,
+                end_col: 0,
+            },
+            selection_range: Range {
+                start_line: 0,
+                start_col: 9,
+                end_line: 0,
+                end_col: 13,
+            },
+        }],
+        related_file_hints: vec![WireRelatedFileHint {
+            path: "src/dep.ts".to_string(),
+            range: None,
+            source: "search".to_string(),
+            score_hint: 0.5,
+        }],
+        signals: Some(WireSignals {
+            symbol_at_cursor: Some("demo".to_string()),
+            renamed_symbols: vec!["before".to_string(), "after".to_string()],
+            imported_symbols: vec!["dep".to_string()],
+            declared_types: vec!["User".to_string()],
+            test_names: vec!["works".to_string()],
+            diagnostic_symbols: vec!["MissingType".to_string()],
+            fuzzy_symbols: vec!["demoHelper".to_string()],
+            retrieval_signal_hints: vec!["cursor tail".to_string()],
+        }),
         config_version: 1,
-    })
+        config_json: Some("{\"fim\":true}".to_string()),
+    }))
 }
 
 fn shutdown() -> ClientFrame {
@@ -56,6 +109,7 @@ fn open_buffer_snapshot_round_trips_through_flatbuffers() {
         language_id: "markdown".to_string(),
         file_path: None,
         file_mode: FileMode::Prose,
+        kind: WireDocumentKind::Untitled,
         text: "hello".to_string(),
     });
 

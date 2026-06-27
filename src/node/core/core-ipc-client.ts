@@ -8,6 +8,7 @@
 
 import * as net from 'node:net';
 import {
+    CoreConfigUpdate,
     CoreCompletionRequest,
     CoreDocumentChange,
     CoreInitialDocumentSnapshot,
@@ -16,11 +17,17 @@ import {
 import { decodeFrames, interpretServerFrame } from './core-frames';
 import {
     type ClientFrame,
+    diagnosticSeverityToWire,
     type WireCompletionRequest,
+    type WireConfigUpdate,
+    type WireDiagnostic,
     type WireDocumentChange,
     type WireFileMode,
     type WireInitialDocument,
     type WireMode,
+    type WireOutlineItem,
+    type WireRelatedFileHint,
+    type WireSignals,
     type WireTextChange,
     encodeClientFramePayload,
 } from './core-flatbuffers';
@@ -48,6 +55,7 @@ export function toWireInitialDocument(snapshot: CoreInitialDocumentSnapshot): Wi
         language_id: snapshot.languageId,
         file_path: snapshot.filePath ?? null,
         file_mode: fileModeToWire(snapshot.fileMode),
+        kind: snapshot.kind === 'untitled' ? 'Untitled' : 'File',
         text: snapshot.text,
     };
 }
@@ -70,13 +78,29 @@ export function toWireCompletionRequest(request: CoreCompletionRequest): WireCom
         model_id: request.modelId,
         uri: request.uri,
         version: request.version,
+        language_id: request.languageId,
         file_mode: fileModeToWire(request.fileMode),
         cursor: {
             line: request.cursor.lineNumber - 1,
             column: request.cursor.column - 1,
             offset: request.cursor.offset,
         },
+        editable_region: request.editableRegion ? toWireIndexedRange(request.editableRegion) : undefined,
+        recent_edit_uris: request.recentEditUris ?? [],
+        diagnostics: toWireDiagnostics(request.diagnostics),
+        outline: toWireOutline(request.outline),
+        related_file_hints: toWireRelatedFileHints(request.relatedFileHints),
+        signals: toWireSignals(request.signals),
         config_version: request.configVersion,
+        config_json: request.configJson,
+    };
+}
+
+/** Converts a config push to its wire representation. */
+export function toWireConfigUpdate(update: CoreConfigUpdate): WireConfigUpdate {
+    return {
+        config_version: update.configVersion,
+        config_json: update.configJson,
     };
 }
 
@@ -125,6 +149,10 @@ export class CoreIpcClient {
 
     async sendDocumentChange(change: CoreDocumentChange): Promise<void> {
         await this.send({ kind: 'DocumentChange', data: toWireDocumentChange(change) });
+    }
+
+    async sendConfigUpdate(update: CoreConfigUpdate): Promise<void> {
+        await this.send({ kind: 'ConfigUpdate', data: toWireConfigUpdate(update) });
     }
 
     /** Sends a completion request and resolves with the assembled token text. */
@@ -247,6 +275,74 @@ function toWireTextChange(change: CoreTextChange): WireTextChange {
         },
         range_length: change.rangeLength,
         inserted_text: change.text,
+    };
+}
+
+function toWireIndexedRange(range: {
+    start: { line: number; character: number };
+    end: { line: number; character: number };
+}): WireDiagnostic['range'] {
+    return {
+        start_line: range.start.line,
+        start_col: range.start.character,
+        end_line: range.end.line,
+        end_col: range.end.character,
+    };
+}
+
+function toWireDiagnostics(
+    diagnostics: CoreCompletionRequest['diagnostics'],
+): WireDiagnostic[] {
+    if (!diagnostics?.length) {
+        return [];
+    }
+    return diagnostics.map(diagnostic => ({
+        range: toWireIndexedRange(diagnostic.range),
+        severity: diagnosticSeverityToWire(diagnostic.severity),
+        message: diagnostic.message,
+        code: diagnostic.code,
+    }));
+}
+
+function toWireOutline(outline: CoreCompletionRequest['outline']): WireOutlineItem[] {
+    if (!outline?.length) {
+        return [];
+    }
+    return outline.map(item => ({
+        name: item.name,
+        kind: item.kind,
+        range: toWireIndexedRange(item.range),
+        selection_range: toWireIndexedRange(item.selectionRange ?? item.range),
+    }));
+}
+
+function toWireRelatedFileHints(
+    hints: CoreCompletionRequest['relatedFileHints'],
+): WireRelatedFileHint[] {
+    if (!hints?.length) {
+        return [];
+    }
+    return hints.map(hint => ({
+        path: hint.path,
+        range: hint.range ? toWireIndexedRange(hint.range) : undefined,
+        source: hint.source,
+        score_hint: hint.scoreHint,
+    }));
+}
+
+function toWireSignals(signals: CoreCompletionRequest['signals']): WireSignals | undefined {
+    if (!signals) {
+        return undefined;
+    }
+    return {
+        symbol_at_cursor: signals.symbolAtCursor,
+        renamed_symbols: signals.renamedSymbols ?? [],
+        imported_symbols: signals.importedSymbols ?? [],
+        declared_types: signals.declaredTypes ?? [],
+        test_names: signals.testNames ?? [],
+        diagnostic_symbols: signals.diagnosticSymbols ?? [],
+        fuzzy_symbols: signals.fuzzySymbols ?? [],
+        retrieval_signal_hints: signals.retrievalSignalHints ?? [],
     };
 }
 

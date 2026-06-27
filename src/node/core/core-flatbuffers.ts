@@ -1,7 +1,8 @@
 import { Builder, ByteBuffer } from 'flatbuffers';
 
-export type WireFileMode = 'Code' | 'Prose';
 export type WireMode = 'Fim' | 'Nes';
+export type WireFileMode = 'Code' | 'Prose';
+export type WireDocumentKind = 'File' | 'Untitled';
 
 export interface WireRange {
     start_line: number;
@@ -22,6 +23,7 @@ export interface WireInitialDocument {
     language_id: string;
     file_path: string | null;
     file_mode: WireFileMode;
+    kind: WireDocumentKind;
     text: string;
 }
 
@@ -38,15 +40,55 @@ export interface WirePosition {
     offset: number;
 }
 
+export interface WireDiagnostic {
+    range: WireRange;
+    severity: number;
+    message: string;
+    code?: string;
+}
+
+export interface WireOutlineItem {
+    name: string;
+    kind: string;
+    range: WireRange;
+    selection_range: WireRange;
+}
+
+export interface WireRelatedFileHint {
+    path: string;
+    range?: WireRange;
+    source: string;
+    score_hint?: number;
+}
+
+export interface WireSignals {
+    symbol_at_cursor?: string;
+    renamed_symbols: string[];
+    imported_symbols: string[];
+    declared_types: string[];
+    test_names: string[];
+    diagnostic_symbols: string[];
+    fuzzy_symbols: string[];
+    retrieval_signal_hints: string[];
+}
+
 export interface WireCompletionRequest {
     request_id: number;
     mode: WireMode;
     model_id: string;
     uri: string;
     version: number;
+    language_id: string;
     file_mode: WireFileMode;
     cursor: WirePosition;
+    editable_region?: WireRange;
+    recent_edit_uris: string[];
+    diagnostics: WireDiagnostic[];
+    outline: WireOutlineItem[];
+    related_file_hints: WireRelatedFileHint[];
+    signals?: WireSignals;
     config_version: number;
+    config_json?: string;
 }
 
 export interface WireConfigUpdate {
@@ -109,10 +151,35 @@ const DOCUMENT_KIND = {
     Untitled: 1,
 } as const;
 
+const DIAGNOSTIC_SEVERITY = {
+    error: 0,
+    warning: 1,
+    info: 2,
+    hint: 3,
+} as const;
+
+export function diagnosticSeverityToWire(
+    severity: 'error' | 'warning' | 'info' | 'hint',
+): number {
+    return DIAGNOSTIC_SEVERITY[severity];
+}
+
+export function diagnosticSeverityFromWire(severity: number): 'error' | 'warning' | 'info' | 'hint' {
+    switch (severity) {
+        case DIAGNOSTIC_SEVERITY.warning:
+            return 'warning';
+        case DIAGNOSTIC_SEVERITY.info:
+            return 'info';
+        case DIAGNOSTIC_SEVERITY.hint:
+            return 'hint';
+        default:
+            return 'error';
+    }
+}
+
 export function encodeClientFramePayload(frame: ClientFrame): Uint8Array {
-    const builder = new Builder(256);
-    const root = createClientFrame(builder, frame);
-    builder.finish(root);
+    const builder = new Builder(512);
+    builder.finish(createClientFrame(builder, frame));
     return builder.asUint8Array();
 }
 
@@ -123,8 +190,7 @@ export function decodeClientFramePayload(payload: Uint8Array): ClientFrame {
 
 export function encodeServerFramePayload(frame: ServerFramePayload): Uint8Array {
     const builder = new Builder(128);
-    const root = createServerFrame(builder, frame);
-    builder.finish(root);
+    builder.finish(createServerFrame(builder, frame));
     return builder.asUint8Array();
 }
 
@@ -141,8 +207,8 @@ export function decodeServerFramePayload(payload: Uint8Array): DecodedServerFram
 }
 
 function createClientFrame(builder: Builder, frame: ClientFrame): number {
-    const kind = CLIENT_FRAME_KIND[frame.kind];
-    const initialDocument = frame.kind === 'InitialDocumentSnapshot' ? createInitialDocumentSnapshot(builder, frame.data) : 0;
+    const initialDocument =
+        frame.kind === 'InitialDocumentSnapshot' ? createInitialDocumentSnapshot(builder, frame.data) : 0;
     const documentChange = frame.kind === 'DocumentChange' ? createDocumentChange(builder, frame.data) : 0;
     const openBuffer = frame.kind === 'OpenBufferSnapshot' ? createOpenBufferSnapshot(builder, frame.data) : 0;
     const request = frame.kind === 'CompletionRequest' ? createCompletionRequest(builder, frame.data) : 0;
@@ -151,7 +217,7 @@ function createClientFrame(builder: Builder, frame: ClientFrame): number {
     const shutdown = frame.kind === 'Shutdown' ? createShutdown(builder, frame.data.reason) : 0;
 
     builder.startObject(8);
-    builder.addFieldInt8(0, kind, CLIENT_FRAME_KIND.InitialDocumentSnapshot);
+    builder.addFieldInt8(0, clientFrameKindValue(frame.kind), CLIENT_FRAME_KIND.InitialDocumentSnapshot);
     builder.addFieldOffset(1, initialDocument, 0);
     builder.addFieldOffset(2, documentChange, 0);
     builder.addFieldOffset(3, openBuffer, 0);
@@ -174,7 +240,7 @@ function createInitialDocumentSnapshot(builder: Builder, snapshot: WireInitialDo
     builder.addFieldOffset(2, languageId, 0);
     builder.addFieldOffset(3, filePath, 0);
     builder.addFieldInt8(4, wireFileModeValue(snapshot.file_mode), WIRE_FILE_MODE.Code);
-    builder.addFieldInt8(5, DOCUMENT_KIND.File, DOCUMENT_KIND.File);
+    builder.addFieldInt8(5, wireDocumentKindValue(snapshot.kind), DOCUMENT_KIND.File);
     builder.addFieldOffset(6, text, 0);
     return builder.endObject();
 }
@@ -216,6 +282,50 @@ function createTextChange(builder: Builder, change: WireTextChange): number {
     return builder.endObject();
 }
 
+function createCompletionRequest(builder: Builder, request: WireCompletionRequest): number {
+    const modelId = createStringOffset(builder, request.model_id);
+    const uri = createStringOffset(builder, request.uri);
+    const languageId = createStringOffset(builder, request.language_id);
+    const cursor = createPosition(builder, request.cursor);
+    const editableRegion = request.editable_region ? createRange(builder, request.editable_region) : 0;
+    const recentEditUris = createStringVector(builder, request.recent_edit_uris);
+    const diagnostics = createOffsetVector(builder, request.diagnostics.map(item => createDiagnostic(builder, item)));
+    const outline = createOffsetVector(builder, request.outline.map(item => createOutlineItem(builder, item)));
+    const relatedFileHints = createOffsetVector(
+        builder,
+        request.related_file_hints.map(item => createRelatedFileHint(builder, item)),
+    );
+    const signals = createSignals(builder, request.signals);
+    const configJson = createStringOffset(builder, request.config_json);
+
+    builder.startObject(16);
+    builder.addFieldInt64(0, bigintFromNumber(request.request_id), BigInt(0));
+    builder.addFieldInt8(1, wireModeValue(request.mode), WIRE_MODE.Fim);
+    builder.addFieldOffset(2, modelId, 0);
+    builder.addFieldOffset(3, uri, 0);
+    builder.addFieldInt32(4, request.version, 0);
+    builder.addFieldOffset(5, languageId, 0);
+    builder.addFieldInt8(6, wireFileModeValue(request.file_mode), WIRE_FILE_MODE.Code);
+    builder.addFieldOffset(7, cursor, 0);
+    builder.addFieldOffset(8, editableRegion, 0);
+    builder.addFieldOffset(9, recentEditUris, 0);
+    builder.addFieldOffset(10, diagnostics, 0);
+    builder.addFieldOffset(11, outline, 0);
+    builder.addFieldOffset(12, relatedFileHints, 0);
+    builder.addFieldOffset(13, signals, 0);
+    builder.addFieldInt64(14, bigintFromNumber(request.config_version), BigInt(0));
+    builder.addFieldOffset(15, configJson, 0);
+    return builder.endObject();
+}
+
+function createPosition(builder: Builder, position: WirePosition): number {
+    builder.startObject(3);
+    builder.addFieldInt32(0, position.line, 0);
+    builder.addFieldInt32(1, position.column, 0);
+    builder.addFieldInt32(2, position.offset, 0);
+    return builder.endObject();
+}
+
 function createRange(builder: Builder, range: WireRange): number {
     builder.startObject(4);
     builder.addFieldInt32(0, range.start_line, 0);
@@ -225,28 +335,68 @@ function createRange(builder: Builder, range: WireRange): number {
     return builder.endObject();
 }
 
-function createCompletionRequest(builder: Builder, request: WireCompletionRequest): number {
-    const modelId = createStringOffset(builder, request.model_id);
-    const uri = createStringOffset(builder, request.uri);
-    const cursor = createPosition(builder, request.cursor);
+function createDiagnostic(builder: Builder, diagnostic: WireDiagnostic): number {
+    const range = createRange(builder, diagnostic.range);
+    const message = createStringOffset(builder, diagnostic.message);
+    const code = createStringOffset(builder, diagnostic.code);
 
-    builder.startObject(16);
-    builder.addFieldInt64(0, bigintFromNumber(request.request_id), BigInt(0));
-    builder.addFieldInt8(1, wireModeValue(request.mode), WIRE_MODE.Fim);
-    builder.addFieldOffset(2, modelId, 0);
-    builder.addFieldOffset(3, uri, 0);
-    builder.addFieldInt32(4, request.version, 0);
-    builder.addFieldInt8(6, wireFileModeValue(request.file_mode), WIRE_FILE_MODE.Code);
-    builder.addFieldOffset(7, cursor, 0);
-    builder.addFieldInt64(14, bigintFromNumber(request.config_version), BigInt(0));
+    builder.startObject(4);
+    builder.addFieldOffset(0, range, 0);
+    builder.addFieldInt8(1, diagnostic.severity, DIAGNOSTIC_SEVERITY.error);
+    builder.addFieldOffset(2, message, 0);
+    builder.addFieldOffset(3, code, 0);
     return builder.endObject();
 }
 
-function createPosition(builder: Builder, position: WirePosition): number {
-    builder.startObject(3);
-    builder.addFieldInt32(0, position.line, 0);
-    builder.addFieldInt32(1, position.column, 0);
-    builder.addFieldInt32(2, position.offset, 0);
+function createOutlineItem(builder: Builder, item: WireOutlineItem): number {
+    const name = createStringOffset(builder, item.name);
+    const kind = createStringOffset(builder, item.kind);
+    const range = createRange(builder, item.range);
+    const selectionRange = createRange(builder, item.selection_range);
+
+    builder.startObject(4);
+    builder.addFieldOffset(0, name, 0);
+    builder.addFieldOffset(1, kind, 0);
+    builder.addFieldOffset(2, range, 0);
+    builder.addFieldOffset(3, selectionRange, 0);
+    return builder.endObject();
+}
+
+function createRelatedFileHint(builder: Builder, hint: WireRelatedFileHint): number {
+    const path = createStringOffset(builder, hint.path);
+    const range = hint.range ? createRange(builder, hint.range) : 0;
+    const source = createStringOffset(builder, hint.source);
+
+    builder.startObject(4);
+    builder.addFieldOffset(0, path, 0);
+    builder.addFieldOffset(1, range, 0);
+    builder.addFieldOffset(2, source, 0);
+    builder.addFieldFloat32(3, hint.score_hint ?? 0, 0);
+    return builder.endObject();
+}
+
+function createSignals(builder: Builder, signals: WireSignals | undefined): number {
+    if (!signals || signalsIsEmpty(signals)) {
+        return 0;
+    }
+    const symbolAtCursor = createStringOffset(builder, signals.symbol_at_cursor);
+    const renamedSymbols = createStringVector(builder, signals.renamed_symbols);
+    const importedSymbols = createStringVector(builder, signals.imported_symbols);
+    const declaredTypes = createStringVector(builder, signals.declared_types);
+    const testNames = createStringVector(builder, signals.test_names);
+    const diagnosticSymbols = createStringVector(builder, signals.diagnostic_symbols);
+    const fuzzySymbols = createStringVector(builder, signals.fuzzy_symbols);
+    const retrievalSignalHints = createStringVector(builder, signals.retrieval_signal_hints);
+
+    builder.startObject(8);
+    builder.addFieldOffset(0, symbolAtCursor, 0);
+    builder.addFieldOffset(1, renamedSymbols, 0);
+    builder.addFieldOffset(2, importedSymbols, 0);
+    builder.addFieldOffset(3, declaredTypes, 0);
+    builder.addFieldOffset(4, testNames, 0);
+    builder.addFieldOffset(5, diagnosticSymbols, 0);
+    builder.addFieldOffset(6, fuzzySymbols, 0);
+    builder.addFieldOffset(7, retrievalSignalHints, 0);
     return builder.endObject();
 }
 
@@ -274,7 +424,12 @@ function createShutdown(builder: Builder, reason: string): number {
 }
 
 function createServerFrame(builder: Builder, frame: ServerFramePayload): number {
-    const text = frame.kind === 'Token' ? createStringOffset(builder, frame.text) : frame.kind === 'Error' ? createStringOffset(builder, frame.message) : 0;
+    const text =
+        frame.kind === 'Token'
+            ? createStringOffset(builder, frame.text)
+            : frame.kind === 'Error'
+              ? createStringOffset(builder, frame.message)
+              : 0;
     const newText = frame.kind === 'Edit' ? createStringOffset(builder, frame.newText) : 0;
 
     builder.startObject(10);
@@ -342,6 +497,7 @@ function decodeInitialDocument(bb: ByteBuffer, table: number): WireInitialDocume
         language_id: requireStringField(bb, table, 8, 'initial_document.language_id'),
         file_path: readStringField(bb, table, 10) ?? null,
         file_mode: decodeWireFileMode(readInt8Field(bb, table, 12, WIRE_FILE_MODE.Code)),
+        kind: decodeWireDocumentKind(readInt8Field(bb, table, 14, DOCUMENT_KIND.File)),
         text: requireStringField(bb, table, 16, 'initial_document.text'),
     };
 }
@@ -353,6 +509,7 @@ function decodeOpenBufferSnapshot(bb: ByteBuffer, table: number): WireInitialDoc
         language_id: requireStringField(bb, table, 8, 'open_buffer.language_id'),
         file_path: null,
         file_mode: decodeWireFileMode(readInt8Field(bb, table, 10, WIRE_FILE_MODE.Code)),
+        kind: 'Untitled',
         text: requireStringField(bb, table, 12, 'open_buffer.text'),
     };
 }
@@ -374,6 +531,35 @@ function decodeTextChange(bb: ByteBuffer, table: number): WireTextChange {
     };
 }
 
+function decodeCompletionRequest(bb: ByteBuffer, table: number): WireCompletionRequest {
+    return {
+        request_id: readUint64AsNumber(bb, table, 4),
+        mode: decodeWireMode(readInt8Field(bb, table, 6, WIRE_MODE.Fim)),
+        model_id: requireStringField(bb, table, 8, 'completion_request.model_id'),
+        uri: requireStringField(bb, table, 10, 'completion_request.uri'),
+        version: readInt32Field(bb, table, 12, 0),
+        language_id: requireStringField(bb, table, 14, 'completion_request.language_id'),
+        file_mode: decodeWireFileMode(readInt8Field(bb, table, 16, WIRE_FILE_MODE.Code)),
+        cursor: decodePosition(bb, requireTable(bb, table, 18, 'completion_request.cursor')),
+        editable_region: readOptionalRange(bb, table, 20),
+        recent_edit_uris: readStringVector(bb, table, 22),
+        diagnostics: readTableVector(bb, table, 24, decodeDiagnostic),
+        outline: readTableVector(bb, table, 26, decodeOutlineItem),
+        related_file_hints: readTableVector(bb, table, 28, decodeRelatedFileHint),
+        signals: readOptionalTable(bb, table, 30, decodeSignals),
+        config_version: readUint64AsNumber(bb, table, 32),
+        config_json: readStringField(bb, table, 34),
+    };
+}
+
+function decodePosition(bb: ByteBuffer, table: number): WirePosition {
+    return {
+        line: readInt32Field(bb, table, 4, 0),
+        column: readInt32Field(bb, table, 6, 0),
+        offset: readUint32Field(bb, table, 8, 0),
+    };
+}
+
 function decodeRange(bb: ByteBuffer, table: number): WireRange {
     return {
         start_line: readInt32Field(bb, table, 4, 0),
@@ -383,24 +569,44 @@ function decodeRange(bb: ByteBuffer, table: number): WireRange {
     };
 }
 
-function decodeCompletionRequest(bb: ByteBuffer, table: number): WireCompletionRequest {
+function decodeDiagnostic(bb: ByteBuffer, table: number): WireDiagnostic {
     return {
-        request_id: readUint64AsNumber(bb, table, 4),
-        mode: decodeWireMode(readInt8Field(bb, table, 6, WIRE_MODE.Fim)),
-        model_id: requireStringField(bb, table, 8, 'completion_request.model_id'),
-        uri: requireStringField(bb, table, 10, 'completion_request.uri'),
-        version: readInt32Field(bb, table, 12, 0),
-        file_mode: decodeWireFileMode(readInt8Field(bb, table, 16, WIRE_FILE_MODE.Code)),
-        cursor: decodePosition(bb, requireTable(bb, table, 18, 'completion_request.cursor')),
-        config_version: readUint64AsNumber(bb, table, 32),
+        range: decodeRange(bb, requireTable(bb, table, 4, 'diagnostic.range')),
+        severity: readInt8Field(bb, table, 6, DIAGNOSTIC_SEVERITY.error),
+        message: requireStringField(bb, table, 8, 'diagnostic.message'),
+        code: readStringField(bb, table, 10),
     };
 }
 
-function decodePosition(bb: ByteBuffer, table: number): WirePosition {
+function decodeOutlineItem(bb: ByteBuffer, table: number): WireOutlineItem {
+    const range = decodeRange(bb, requireTable(bb, table, 8, 'outline.range'));
     return {
-        line: readInt32Field(bb, table, 4, 0),
-        column: readInt32Field(bb, table, 6, 0),
-        offset: readUint32Field(bb, table, 8, 0),
+        name: requireStringField(bb, table, 4, 'outline.name'),
+        kind: requireStringField(bb, table, 6, 'outline.kind'),
+        range,
+        selection_range: readOptionalRange(bb, table, 10) ?? range,
+    };
+}
+
+function decodeRelatedFileHint(bb: ByteBuffer, table: number): WireRelatedFileHint {
+    return {
+        path: requireStringField(bb, table, 4, 'related_file_hint.path'),
+        range: readOptionalRange(bb, table, 6),
+        source: requireStringField(bb, table, 8, 'related_file_hint.source'),
+        score_hint: hasField(bb, table, 10) ? readFloat32Field(bb, table, 10, 0) : undefined,
+    };
+}
+
+function decodeSignals(bb: ByteBuffer, table: number): WireSignals {
+    return {
+        symbol_at_cursor: readStringField(bb, table, 4),
+        renamed_symbols: readStringVector(bb, table, 6),
+        imported_symbols: readStringVector(bb, table, 8),
+        declared_types: readStringVector(bb, table, 10),
+        test_names: readStringVector(bb, table, 12),
+        diagnostic_symbols: readStringVector(bb, table, 14),
+        fuzzy_symbols: readStringVector(bb, table, 16),
+        retrieval_signal_hints: readStringVector(bb, table, 18),
     };
 }
 
@@ -431,7 +637,18 @@ function createStringOffset(builder: Builder, value: string | null | undefined):
     return value == null ? 0 : builder.createString(value);
 }
 
-function createOffsetVector(builder: Builder, offsets: number[]): number {
+function createStringVector(builder: Builder, values: readonly string[]): number {
+    if (values.length === 0) {
+        return 0;
+    }
+    const offsets = new Array<number>(values.length);
+    for (let i = 0; i < values.length; i += 1) {
+        offsets[i] = builder.createString(values[i]);
+    }
+    return createOffsetVector(builder, offsets);
+}
+
+function createOffsetVector(builder: Builder, offsets: readonly number[]): number {
     if (offsets.length === 0) {
         return 0;
     }
@@ -454,6 +671,16 @@ function requireTable(bb: ByteBuffer, table: number, vtableOffset: number, field
     return nested;
 }
 
+function readOptionalTable<T>(
+    bb: ByteBuffer,
+    table: number,
+    vtableOffset: number,
+    decode: (bb: ByteBuffer, table: number) => T,
+): T | undefined {
+    const nested = readTableField(bb, table, vtableOffset);
+    return nested === undefined ? undefined : decode(bb, nested);
+}
+
 function readTableField(bb: ByteBuffer, table: number, vtableOffset: number): number | undefined {
     const offset = bb.__offset(table, vtableOffset);
     return offset ? bb.__indirect(table + offset) : undefined;
@@ -461,6 +688,10 @@ function readTableField(bb: ByteBuffer, table: number, vtableOffset: number): nu
 
 function hasField(bb: ByteBuffer, table: number, vtableOffset: number): boolean {
     return bb.__offset(table, vtableOffset) !== 0;
+}
+
+function readOptionalRange(bb: ByteBuffer, table: number, vtableOffset: number): WireRange | undefined {
+    return readOptionalTable(bb, table, vtableOffset, decodeRange);
 }
 
 function requireStringField(bb: ByteBuffer, table: number, vtableOffset: number, field: string): string {
@@ -474,6 +705,39 @@ function requireStringField(bb: ByteBuffer, table: number, vtableOffset: number,
 function readStringField(bb: ByteBuffer, table: number, vtableOffset: number): string | undefined {
     const offset = bb.__offset(table, vtableOffset);
     return offset ? (bb.__string(table + offset) as string) : undefined;
+}
+
+function readStringVector(bb: ByteBuffer, table: number, vtableOffset: number): string[] {
+    const offset = bb.__offset(table, vtableOffset);
+    if (!offset) {
+        return [];
+    }
+    const vector = bb.__vector(table + offset);
+    const length = bb.__vector_len(table + offset);
+    const values = new Array<string>(length);
+    for (let i = 0; i < length; i += 1) {
+        values[i] = bb.__string(vector + i * 4) as string;
+    }
+    return values;
+}
+
+function readTableVector<T>(
+    bb: ByteBuffer,
+    table: number,
+    vtableOffset: number,
+    decode: (bb: ByteBuffer, table: number) => T,
+): T[] {
+    const offset = bb.__offset(table, vtableOffset);
+    if (!offset) {
+        return [];
+    }
+    const vectorOffset = bb.__vector(table + offset);
+    const length = bb.__vector_len(table + offset);
+    const items = new Array<T>(length);
+    for (let i = 0; i < length; i += 1) {
+        items[i] = decode(bb, bb.__indirect(vectorOffset + i * 4));
+    }
+    return items;
 }
 
 function readInt8Field(bb: ByteBuffer, table: number, vtableOffset: number, defaultValue: number): number {
@@ -496,23 +760,13 @@ function readUint64AsNumber(bb: ByteBuffer, table: number, vtableOffset: number)
     return bigintToNumber(offset ? bb.readUint64(table + offset) : BigInt(0));
 }
 
-function readTableVector<T>(
-    bb: ByteBuffer,
-    table: number,
-    vtableOffset: number,
-    decode: (bb: ByteBuffer, table: number) => T,
-): T[] {
+function readFloat32Field(bb: ByteBuffer, table: number, vtableOffset: number, defaultValue: number): number {
     const offset = bb.__offset(table, vtableOffset);
-    if (!offset) {
-        return [];
-    }
-    const vectorOffset = bb.__vector(table + offset);
-    const length = bb.__vector_len(table + offset);
-    const items = new Array<T>(length);
-    for (let i = 0; i < length; i += 1) {
-        items[i] = decode(bb, bb.__indirect(vectorOffset + i * 4));
-    }
-    return items;
+    return offset ? bb.readFloat32(table + offset) : defaultValue;
+}
+
+function clientFrameKindValue(kind: ClientFrame['kind']): number {
+    return CLIENT_FRAME_KIND[kind];
 }
 
 function wireModeValue(mode: WireMode): number {
@@ -529,6 +783,25 @@ function wireFileModeValue(mode: WireFileMode): number {
 
 function decodeWireFileMode(mode: number): WireFileMode {
     return mode === WIRE_FILE_MODE.Prose ? 'Prose' : 'Code';
+}
+
+function wireDocumentKindValue(kind: WireDocumentKind): number {
+    return kind === 'Untitled' ? DOCUMENT_KIND.Untitled : DOCUMENT_KIND.File;
+}
+
+function decodeWireDocumentKind(kind: number): WireDocumentKind {
+    return kind === DOCUMENT_KIND.Untitled ? 'Untitled' : 'File';
+}
+
+function signalsIsEmpty(signals: WireSignals): boolean {
+    return !signals.symbol_at_cursor &&
+        signals.renamed_symbols.length === 0 &&
+        signals.imported_symbols.length === 0 &&
+        signals.declared_types.length === 0 &&
+        signals.test_names.length === 0 &&
+        signals.diagnostic_symbols.length === 0 &&
+        signals.fuzzy_symbols.length === 0 &&
+        signals.retrieval_signal_hints.length === 0;
 }
 
 function serverFrameKindValue(kind: ServerFramePayload['kind']): number {

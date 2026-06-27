@@ -37,7 +37,9 @@ pub use framing::{read_frame, write_frame, FrameError};
 pub use protocol::{
     decode_client_frame, decode_server_frame, encode_client_frame, encode_server_frame,
     ClientFrame, ProtocolError, ServerFrame, WireCancel, WireCompletionRequest, WireConfigUpdate,
-    WireDocumentChange, WireInitialDocument, WireShutdown, WireTextChange,
+    WireDiagnostic, WireDiagnosticSeverity, WireDocumentChange, WireDocumentKind,
+    WireInitialDocument, WireOutlineItem, WireRelatedFileHint, WireShutdown, WireSignals,
+    WireTextChange,
 };
 pub use server::{serve_connection, ConnectionEnd, FrameHandler, HandlerOutcome};
 

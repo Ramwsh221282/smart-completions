@@ -20,6 +20,15 @@ pub struct WireTextChange {
     pub inserted_text: String,
 }
 
+/// Whether the snapshot came from a file or an untitled buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WireDocumentKind {
+    /// File-backed document snapshot.
+    File,
+    /// Untitled or unsaved buffer snapshot.
+    Untitled,
+}
+
 /// Full document snapshot on the wire.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WireInitialDocument {
@@ -33,6 +42,8 @@ pub struct WireInitialDocument {
     pub file_path: Option<String>,
     /// Whether the document is code or prose.
     pub file_mode: FileMode,
+    /// Whether the snapshot is file-backed or untitled.
+    pub kind: WireDocumentKind,
     /// Full document text.
     pub text: String,
 }
@@ -50,8 +61,81 @@ pub struct WireDocumentChange {
     pub changes: Vec<WireTextChange>,
 }
 
-/// A completion request on the wire.
+/// Diagnostic severity preserved across the transport boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WireDiagnosticSeverity {
+    /// Error diagnostic.
+    Error,
+    /// Warning diagnostic.
+    Warning,
+    /// Informational diagnostic.
+    Info,
+    /// Hint diagnostic.
+    Hint,
+}
+
+/// Diagnostic hint sent as raw context, not rendered prompt text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireDiagnostic {
+    /// Affected range.
+    pub range: Range,
+    /// Diagnostic severity.
+    pub severity: WireDiagnosticSeverity,
+    /// User-facing message.
+    pub message: String,
+    /// Optional diagnostic code.
+    pub code: Option<String>,
+}
+
+/// Outline item gathered on the frontend.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireOutlineItem {
+    /// Symbol name.
+    pub name: String,
+    /// Symbol kind label.
+    pub kind: String,
+    /// Full symbol range.
+    pub range: Range,
+    /// More precise selection range when available.
+    pub selection_range: Range,
+}
+
+/// Related-file pointer that lets the core load and rank context itself.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WireRelatedFileHint {
+    /// Workspace-relative path.
+    pub path: String,
+    /// Optional range of interest inside the file.
+    pub range: Option<Range>,
+    /// Origin of the hint.
+    pub source: String,
+    /// Source-provided score used as a tie-breaker.
+    pub score_hint: f32,
+}
+
+/// Raw retrieval/query signals gathered on the frontend.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireSignals {
+    /// Symbol under the cursor when known.
+    pub symbol_at_cursor: Option<String>,
+    /// Recently renamed symbols.
+    pub renamed_symbols: Vec<String>,
+    /// Imported symbols from the current view.
+    pub imported_symbols: Vec<String>,
+    /// Declared type names near the edit.
+    pub declared_types: Vec<String>,
+    /// Test names near the edit.
+    pub test_names: Vec<String>,
+    /// Symbols extracted from diagnostics.
+    pub diagnostic_symbols: Vec<String>,
+    /// Fuzzy-ranked symbol candidates.
+    pub fuzzy_symbols: Vec<String>,
+    /// Additional retrieval hints already normalized by the frontend.
+    pub retrieval_signal_hints: Vec<String>,
+}
+
+/// A completion request on the wire.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WireCompletionRequest {
     /// Request identity for cancellation and stream correlation.
     pub request_id: RequestId,
@@ -63,12 +147,28 @@ pub struct WireCompletionRequest {
     pub uri: String,
     /// Document version the request was built against.
     pub version: DocumentVersion,
+    /// Editor language id.
+    pub language_id: String,
     /// Whether the document is code or prose.
     pub file_mode: FileMode,
     /// Cursor position.
     pub cursor: Position,
+    /// Optional frontend-selected editable region.
+    pub editable_region: Option<Range>,
+    /// URIs of recent edits already tracked by the frontend.
+    pub recent_edit_uris: Vec<String>,
+    /// Diagnostics gathered near the request.
+    pub diagnostics: Vec<WireDiagnostic>,
+    /// Outline items describing the active file structure.
+    pub outline: Vec<WireOutlineItem>,
+    /// Related-file pointers.
+    pub related_file_hints: Vec<WireRelatedFileHint>,
+    /// Raw retrieval/query signals.
+    pub signals: Option<WireSignals>,
     /// Config version the request assumes.
     pub config_version: u64,
+    /// Optional serialized config payload.
+    pub config_json: Option<String>,
 }
 
 /// A cancellation request on the wire.
@@ -95,7 +195,7 @@ pub struct WireShutdown {
 }
 
 /// A frame sent from Node to the core.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClientFrame {
     /// Full document snapshot for a freshly opened document.
     InitialDocumentSnapshot(WireInitialDocument),
@@ -104,7 +204,7 @@ pub enum ClientFrame {
     /// Snapshot for an unsaved or untitled buffer.
     OpenBufferSnapshot(WireInitialDocument),
     /// Request a completion.
-    CompletionRequest(WireCompletionRequest),
+    CompletionRequest(Box<WireCompletionRequest>),
     /// Cancel an in-flight request.
     Cancel(WireCancel),
     /// Update configuration.
@@ -155,7 +255,7 @@ pub enum ProtocolError {
     #[error("flatbuffers error: {0}")]
     Flatbuffers(#[from] planus::Error),
 
-    /// The frame omitted a field this transitional DTO still requires.
+    /// The frame omitted a field this high-level DTO still requires.
     #[error("missing field `{0}`")]
     MissingField(&'static str),
 
@@ -298,9 +398,9 @@ fn from_generated_client_frame(frame: sc::ClientFrame) -> Result<ClientFrame, Pr
         sc::ClientFrameKind::OpenBufferSnapshot => Ok(ClientFrame::OpenBufferSnapshot(
             from_generated_open_buffer(require_box(frame.open_buffer, "client.open_buffer")?)?,
         )),
-        sc::ClientFrameKind::CompletionRequest => Ok(ClientFrame::CompletionRequest(
+        sc::ClientFrameKind::CompletionRequest => Ok(ClientFrame::CompletionRequest(Box::new(
             from_generated_completion_request(require_box(frame.request, "client.request")?)?,
-        )),
+        ))),
         sc::ClientFrameKind::Cancel => Ok(ClientFrame::Cancel(WireCancel {
             request_id: require_box(frame.cancel, "client.cancel")?.request_id,
         })),
@@ -420,7 +520,7 @@ fn to_generated_initial_document(doc: &WireInitialDocument) -> sc::InitialDocume
         language_id: Some(doc.language_id.clone()),
         file_path: doc.file_path.clone(),
         file_mode: to_generated_file_mode(doc.file_mode),
-        kind: sc::DocumentKind::File,
+        kind: to_generated_document_kind(doc.kind),
         text: Some(doc.text.clone()),
     }
 }
@@ -434,6 +534,7 @@ fn from_generated_initial_document(
         language_id: require_value(doc.language_id, "initial_document.language_id")?,
         file_path: doc.file_path,
         file_mode: from_generated_file_mode(doc.file_mode),
+        kind: from_generated_document_kind(doc.kind),
         text: require_value(doc.text, "initial_document.text")?,
     })
 }
@@ -457,6 +558,7 @@ fn from_generated_open_buffer(
         language_id: require_value(doc.language_id, "open_buffer.language_id")?,
         file_path: None,
         file_mode: from_generated_file_mode(doc.file_mode),
+        kind: WireDocumentKind::Untitled,
         text: require_value(doc.text, "open_buffer.text")?,
     })
 }
@@ -466,7 +568,7 @@ fn to_generated_document_change(change: &WireDocumentChange) -> sc::DocumentChan
         uri: Some(change.uri.clone()),
         from_version: change.from_version,
         to_version: change.to_version,
-        changes: Some(to_generated_text_changes(&change.changes)),
+        changes: vec_if_nonempty(to_generated_text_changes(&change.changes)),
     }
 }
 
@@ -517,17 +619,21 @@ fn to_generated_completion_request(request: &WireCompletionRequest) -> sc::Compl
         model_id: Some(request.model_id.clone()),
         uri: Some(request.uri.clone()),
         version: request.version,
-        language_id: None,
+        language_id: Some(request.language_id.clone()),
         file_mode: to_generated_file_mode(request.file_mode),
         cursor: Some(Box::new(to_generated_position(request.cursor))),
-        editable_region: None,
-        recent_edit_uris: None,
-        diagnostics: None,
-        outline: None,
-        related_file_hints: None,
-        signals: None,
+        editable_region: request
+            .editable_region
+            .map(|range| Box::new(to_generated_range(range))),
+        recent_edit_uris: vec_if_nonempty(request.recent_edit_uris.clone()),
+        diagnostics: vec_if_nonempty(to_generated_diagnostics(&request.diagnostics)),
+        outline: vec_if_nonempty(to_generated_outline(&request.outline)),
+        related_file_hints: vec_if_nonempty(to_generated_related_file_hints(
+            &request.related_file_hints,
+        )),
+        signals: generated_signals(request.signals.as_ref()),
         config_version: request.config_version,
-        config_json: None,
+        config_json: request.config_json.clone(),
     }
 }
 
@@ -540,10 +646,157 @@ fn from_generated_completion_request(
         model_id: require_value(request.model_id, "completion_request.model_id")?,
         uri: require_value(request.uri, "completion_request.uri")?,
         version: request.version,
+        language_id: require_value(request.language_id, "completion_request.language_id")?,
         file_mode: from_generated_file_mode(request.file_mode),
         cursor: from_generated_position(&require_box(request.cursor, "completion_request.cursor")?),
+        editable_region: request
+            .editable_region
+            .map(|range| from_generated_range(&range)),
+        recent_edit_uris: request.recent_edit_uris.unwrap_or_default(),
+        diagnostics: request
+            .diagnostics
+            .unwrap_or_default()
+            .into_iter()
+            .map(from_generated_diagnostic)
+            .collect::<Result<Vec<_>, _>>()?,
+        outline: request
+            .outline
+            .unwrap_or_default()
+            .into_iter()
+            .map(from_generated_outline_item)
+            .collect::<Result<Vec<_>, _>>()?,
+        related_file_hints: request
+            .related_file_hints
+            .unwrap_or_default()
+            .into_iter()
+            .map(from_generated_related_file_hint)
+            .collect::<Result<Vec<_>, _>>()?,
+        signals: request
+            .signals
+            .map(|signals| from_generated_signals(&signals)),
         config_version: request.config_version,
+        config_json: request.config_json,
     })
+}
+
+fn to_generated_diagnostics(diagnostics: &[WireDiagnostic]) -> Vec<sc::Diagnostic> {
+    let mut out = Vec::with_capacity(diagnostics.len());
+    for diagnostic in diagnostics {
+        out.push(to_generated_diagnostic(diagnostic));
+    }
+    out
+}
+
+fn to_generated_diagnostic(diagnostic: &WireDiagnostic) -> sc::Diagnostic {
+    sc::Diagnostic {
+        range: Some(Box::new(to_generated_range(diagnostic.range))),
+        severity: diagnostic_severity_to_wire(diagnostic.severity),
+        message: Some(diagnostic.message.clone()),
+        code: diagnostic.code.clone(),
+    }
+}
+
+fn from_generated_diagnostic(diagnostic: sc::Diagnostic) -> Result<WireDiagnostic, ProtocolError> {
+    Ok(WireDiagnostic {
+        range: from_generated_range(&require_box(diagnostic.range, "diagnostic.range")?),
+        severity: diagnostic_severity_from_wire(diagnostic.severity),
+        message: require_value(diagnostic.message, "diagnostic.message")?,
+        code: diagnostic.code,
+    })
+}
+
+fn to_generated_outline(items: &[WireOutlineItem]) -> Vec<sc::OutlineItem> {
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        out.push(to_generated_outline_item(item));
+    }
+    out
+}
+
+fn to_generated_outline_item(item: &WireOutlineItem) -> sc::OutlineItem {
+    sc::OutlineItem {
+        name: Some(item.name.clone()),
+        kind: Some(item.kind.clone()),
+        range: Some(Box::new(to_generated_range(item.range))),
+        selection_range: Some(Box::new(to_generated_range(item.selection_range))),
+    }
+}
+
+fn from_generated_outline_item(item: sc::OutlineItem) -> Result<WireOutlineItem, ProtocolError> {
+    let range = from_generated_range(&require_box(item.range, "outline.range")?);
+
+    Ok(WireOutlineItem {
+        name: require_value(item.name, "outline.name")?,
+        kind: require_value(item.kind, "outline.kind")?,
+        selection_range: item
+            .selection_range
+            .as_ref()
+            .map_or(range, |selection| from_generated_range(selection)),
+        range,
+    })
+}
+
+fn to_generated_related_file_hints(hints: &[WireRelatedFileHint]) -> Vec<sc::RelatedFileHint> {
+    let mut out = Vec::with_capacity(hints.len());
+    for hint in hints {
+        out.push(to_generated_related_file_hint(hint));
+    }
+    out
+}
+
+fn to_generated_related_file_hint(hint: &WireRelatedFileHint) -> sc::RelatedFileHint {
+    sc::RelatedFileHint {
+        path: Some(hint.path.clone()),
+        range: hint.range.map(|range| Box::new(to_generated_range(range))),
+        source: Some(hint.source.clone()),
+        score_hint: hint.score_hint,
+    }
+}
+
+fn from_generated_related_file_hint(
+    hint: sc::RelatedFileHint,
+) -> Result<WireRelatedFileHint, ProtocolError> {
+    Ok(WireRelatedFileHint {
+        path: require_value(hint.path, "related_file_hint.path")?,
+        range: hint.range.as_ref().map(|range| from_generated_range(range)),
+        source: require_value(hint.source, "related_file_hint.source")?,
+        score_hint: hint.score_hint,
+    })
+}
+
+fn generated_signals(signals: Option<&WireSignals>) -> Option<Box<sc::Signals>> {
+    let signals = signals?;
+    if signals_is_empty(signals) {
+        return None;
+    }
+
+    Some(Box::new(to_generated_signals(signals)))
+}
+
+fn to_generated_signals(signals: &WireSignals) -> sc::Signals {
+    sc::Signals {
+        symbol_at_cursor: signals.symbol_at_cursor.clone(),
+        renamed_symbols: vec_if_nonempty(signals.renamed_symbols.clone()),
+        imported_symbols: vec_if_nonempty(signals.imported_symbols.clone()),
+        declared_types: vec_if_nonempty(signals.declared_types.clone()),
+        test_names: vec_if_nonempty(signals.test_names.clone()),
+        diagnostic_symbols: vec_if_nonempty(signals.diagnostic_symbols.clone()),
+        fuzzy_symbols: vec_if_nonempty(signals.fuzzy_symbols.clone()),
+        retrieval_signal_hints: vec_if_nonempty(signals.retrieval_signal_hints.clone()),
+    }
+}
+
+fn from_generated_signals(signals: &sc::Signals) -> WireSignals {
+    WireSignals {
+        symbol_at_cursor: signals.symbol_at_cursor.clone(),
+        renamed_symbols: signals.renamed_symbols.clone().unwrap_or_default(),
+        imported_symbols: signals.imported_symbols.clone().unwrap_or_default(),
+        declared_types: signals.declared_types.clone().unwrap_or_default(),
+        test_names: signals.test_names.clone().unwrap_or_default(),
+        diagnostic_symbols: signals.diagnostic_symbols.clone().unwrap_or_default(),
+        fuzzy_symbols: signals.fuzzy_symbols.clone().unwrap_or_default(),
+        retrieval_signal_hints: signals.retrieval_signal_hints.clone().unwrap_or_default(),
+    }
 }
 
 fn to_generated_range(range: Range) -> sc::Range {
@@ -608,6 +861,38 @@ fn from_generated_file_mode(mode: sc::FileMode) -> FileMode {
     }
 }
 
+fn to_generated_document_kind(kind: WireDocumentKind) -> sc::DocumentKind {
+    match kind {
+        WireDocumentKind::File => sc::DocumentKind::File,
+        WireDocumentKind::Untitled => sc::DocumentKind::Untitled,
+    }
+}
+
+fn from_generated_document_kind(kind: sc::DocumentKind) -> WireDocumentKind {
+    match kind {
+        sc::DocumentKind::File => WireDocumentKind::File,
+        sc::DocumentKind::Untitled => WireDocumentKind::Untitled,
+    }
+}
+
+fn diagnostic_severity_to_wire(severity: WireDiagnosticSeverity) -> i8 {
+    match severity {
+        WireDiagnosticSeverity::Error => 0,
+        WireDiagnosticSeverity::Warning => 1,
+        WireDiagnosticSeverity::Info => 2,
+        WireDiagnosticSeverity::Hint => 3,
+    }
+}
+
+fn diagnostic_severity_from_wire(severity: i8) -> WireDiagnosticSeverity {
+    match severity {
+        1 => WireDiagnosticSeverity::Warning,
+        2 => WireDiagnosticSeverity::Info,
+        3 => WireDiagnosticSeverity::Hint,
+        _ => WireDiagnosticSeverity::Error,
+    }
+}
+
 fn jump_from_generated_frame(frame: &sc::StreamFrame) -> Option<Position> {
     if frame.jump_line == 0 && frame.jump_col == 0 {
         return None;
@@ -618,6 +903,25 @@ fn jump_from_generated_frame(frame: &sc::StreamFrame) -> Option<Position> {
         column: frame.jump_col,
         offset: 0,
     })
+}
+
+fn signals_is_empty(signals: &WireSignals) -> bool {
+    signals.symbol_at_cursor.is_none()
+        && signals.renamed_symbols.is_empty()
+        && signals.imported_symbols.is_empty()
+        && signals.declared_types.is_empty()
+        && signals.test_names.is_empty()
+        && signals.diagnostic_symbols.is_empty()
+        && signals.fuzzy_symbols.is_empty()
+        && signals.retrieval_signal_hints.is_empty()
+}
+
+fn vec_if_nonempty<T>(values: Vec<T>) -> Option<Vec<T>> {
+    if values.is_empty() {
+        None
+    } else {
+        Some(values)
+    }
 }
 
 fn require_box<T>(value: Option<Box<T>>, field: &'static str) -> Result<T, ProtocolError> {

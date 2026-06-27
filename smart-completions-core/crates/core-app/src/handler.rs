@@ -134,7 +134,7 @@ impl CoreFrameHandler {
             .map_err(|err| err.to_string())?;
 
         let input = FimRenderInput {
-            language_id: "",
+            language_id: &request.language_id,
             file_path: &request.uri,
             prefix,
             suffix,

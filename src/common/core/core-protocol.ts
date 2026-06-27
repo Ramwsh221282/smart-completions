@@ -52,6 +52,63 @@ export interface CoreCursor {
     offset: number;
 }
 
+/** Lightweight 0-based position DTO for diagnostics, outline and region hints. */
+export interface CoreIndexedPosition {
+    line: number;
+    character: number;
+}
+
+/** Lightweight 0-based range DTO for diagnostics, outline and region hints. */
+export interface CoreIndexedRange {
+    start: CoreIndexedPosition;
+    end: CoreIndexedPosition;
+}
+
+/** Severity labels mirrored from the editor diagnostics pipeline. */
+export type CoreDiagnosticSeverity = 'error' | 'warning' | 'info' | 'hint';
+
+/** Diagnostic hint sent as raw signal, not as rendered prompt text. */
+export interface CoreDiagnostic {
+    range: CoreIndexedRange;
+    severity: CoreDiagnosticSeverity;
+    message: string;
+    code?: string;
+}
+
+/** Outline item from frontend structure sources. */
+export interface CoreOutlineItem {
+    name: string;
+    kind: string;
+    range: CoreIndexedRange;
+    selectionRange?: CoreIndexedRange;
+}
+
+/** Related-file pointer that lets the core load and rank context itself. */
+export interface CoreRelatedFileHint {
+    path: string;
+    range?: CoreIndexedRange;
+    source: string;
+    scoreHint?: number;
+}
+
+/** Raw retrieval/query signals gathered on the frontend. */
+export interface CoreSignals {
+    symbolAtCursor?: string;
+    renamedSymbols?: string[];
+    importedSymbols?: string[];
+    declaredTypes?: string[];
+    testNames?: string[];
+    diagnosticSymbols?: string[];
+    fuzzySymbols?: string[];
+    retrievalSignalHints?: string[];
+}
+
+/** Config push matching the dedicated ConfigUpdate frame in the schema. */
+export interface CoreConfigUpdate {
+    configVersion: number;
+    configJson: string;
+}
+
 /** A completion request routed to the core. */
 export interface CoreCompletionRequest {
     requestId: number;
@@ -59,9 +116,17 @@ export interface CoreCompletionRequest {
     modelId: string;
     uri: string;
     version: number;
+    languageId: string;
     fileMode: CoreFileMode;
     cursor: CoreCursor;
+    editableRegion?: CoreIndexedRange;
+    recentEditUris?: string[];
+    diagnostics?: CoreDiagnostic[];
+    outline?: CoreOutlineItem[];
+    relatedFileHints?: CoreRelatedFileHint[];
+    signals?: CoreSignals;
     configVersion: number;
+    configJson?: string;
 }
 
 /** Result of a routed completion request: the assembled text plus status. */
@@ -87,6 +152,7 @@ export const CoreBackendService = Symbol('CoreBackendService');
 export interface CoreBackendService {
     syncInitialDocument(snapshot: CoreInitialDocumentSnapshot): Promise<void>;
     applyDocumentChange(change: CoreDocumentChange): Promise<void>;
+    syncConfig(update: CoreConfigUpdate): Promise<void>;
     requestCompletion(request: CoreCompletionRequest): Promise<CoreCompletionResult>;
     cancel(requestId: number): Promise<void>;
     getStatus(): Promise<CoreStatus>;

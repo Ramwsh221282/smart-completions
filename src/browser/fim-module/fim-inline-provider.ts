@@ -154,6 +154,7 @@ export class FimInlineProvider implements FrontendApplicationContribution, monac
                 modelId: this.config.modelId,
                 uri: prepared.request.uri,
                 version,
+                languageId: prepared.request.languageId,
                 fileMode: prepared.request.fileMode,
                 cursor: {
                     lineNumber: position.lineNumber,

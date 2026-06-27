@@ -5,6 +5,7 @@
 import { injectable } from '@theia/core/shared/inversify';
 import {
     CoreBackendService,
+    CoreConfigUpdate,
     CoreCompletionRequest,
     CoreCompletionResult,
     CoreDocumentChange,
@@ -50,6 +51,13 @@ export class CoreBackendServiceImpl implements CoreBackendService {
             return;
         }
         await this.ipc.sendDocumentChange(change);
+    }
+
+    async syncConfig(update: CoreConfigUpdate): Promise<void> {
+        if (!this.started) {
+            return;
+        }
+        await this.ipc.sendConfigUpdate(update);
     }
 
     async requestCompletion(request: CoreCompletionRequest): Promise<CoreCompletionResult> {

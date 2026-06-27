@@ -3,7 +3,9 @@
 use std::time::Duration;
 
 use core_app::CoreFrameHandler;
-use core_ipc::{ClientFrame, ServerFrame, WireCompletionRequest, WireInitialDocument};
+use core_ipc::{
+    ClientFrame, ServerFrame, WireCompletionRequest, WireDocumentKind, WireInitialDocument,
+};
 use core_llama::GenerationClient;
 use core_types::{CompletionMode, FileMode, Position};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -29,25 +31,34 @@ fn snapshot() -> ClientFrame {
         language_id: "typescript".to_string(),
         file_path: Some("a.ts".to_string()),
         file_mode: FileMode::Code,
+        kind: WireDocumentKind::File,
         text: "const x = 1;\n".to_string(),
     })
 }
 
 fn completion(model_id: &str, mode: CompletionMode) -> ClientFrame {
-    ClientFrame::CompletionRequest(WireCompletionRequest {
+    ClientFrame::CompletionRequest(Box::new(WireCompletionRequest {
         request_id: 1,
         mode,
         model_id: model_id.to_string(),
         uri: "file:///a.ts".to_string(),
         version: 1,
+        language_id: "typescript".to_string(),
         file_mode: FileMode::Code,
         cursor: Position {
             line: 0,
             column: 10,
             offset: 0,
         },
+        editable_region: None,
+        recent_edit_uris: Vec::new(),
+        diagnostics: Vec::new(),
+        outline: Vec::new(),
+        related_file_hints: Vec::new(),
+        signals: None,
         config_version: 1,
-    })
+        config_json: None,
+    }))
 }
 
 async fn next_frame(receiver: &mut UnboundedReceiver<ServerFrame>) -> ServerFrame {
