@@ -16,6 +16,8 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::completion::{spawn_fim_completion, FimCompletion};
 
+const MAX_RELATED_HINT_NEIGHBORS: usize = 6;
+
 /// What the connection loop should do after one frame.
 pub enum HandleOutcome {
     /// Keep serving the connection.
@@ -202,27 +204,46 @@ impl CoreFrameHandler {
     // Related-file hints only carry workspace-relative paths, so the core uses
     // the synchronized current-file metadata to resolve and read them itself.
     fn related_hint_neighbors(&self, request: &WireCompletionRequest) -> Vec<Neighbor> {
-        let Some(workspace_root) = self.workspace_root(request) else {
+        let Some((workspace_root, current_file_path)) = self.workspace_context(request) else {
             return Vec::new();
         };
 
-        let mut neighbors = Vec::with_capacity(request.related_file_hints.len());
-        for hint in &request.related_file_hints {
+        let mut loaded = Vec::with_capacity(request.related_file_hints.len());
+        for (index, hint) in request.related_file_hints.iter().enumerate() {
+            if hint.path == current_file_path {
+                continue;
+            }
             if let Some(neighbor) = load_related_hint_neighbor(&workspace_root, hint) {
-                neighbors.push(neighbor);
+                loaded.push(LoadedRelatedHint {
+                    neighbor,
+                    score_hint: hint.score_hint,
+                    has_range: hint.range.is_some(),
+                    source_index: index,
+                });
             }
         }
-        neighbors
+
+        rank_related_hints(loaded)
     }
 
-    fn workspace_root(&self, request: &WireCompletionRequest) -> Option<PathBuf> {
+    fn workspace_context(&self, request: &WireCompletionRequest) -> Option<(PathBuf, &str)> {
         let current_file = self
             .store
             .file_path_at(&request.uri, request.version)
             .ok()
             .flatten()?;
-        derive_workspace_root(&request.uri, current_file)
+        Some((
+            derive_workspace_root(&request.uri, current_file)?,
+            current_file,
+        ))
     }
+}
+
+struct LoadedRelatedHint {
+    neighbor: Neighbor,
+    score_hint: f32,
+    has_range: bool,
+    source_index: usize,
 }
 
 fn load_related_hint_neighbor(
@@ -234,6 +255,33 @@ fn load_related_hint_neighbor(
     let text = clip_related_file(&text, hint.range);
 
     Some(metadata_neighbor(hint.path.clone(), text))
+}
+
+// Loaded related files are re-ranked in the core so prompt ordering stays
+// stable even when some hints fail to load or point back to the current file.
+fn rank_related_hints(mut loaded: Vec<LoadedRelatedHint>) -> Vec<Neighbor> {
+    loaded.sort_by(|left, right| {
+        right
+            .score_hint
+            .total_cmp(&left.score_hint)
+            .then_with(|| right.has_range.cmp(&left.has_range))
+            .then_with(|| left.source_index.cmp(&right.source_index))
+    });
+
+    let mut selected = Vec::with_capacity(loaded.len().min(MAX_RELATED_HINT_NEIGHBORS));
+    for candidate in loaded {
+        if selected
+            .iter()
+            .any(|neighbor: &Neighbor| neighbor.file_path == candidate.neighbor.file_path)
+        {
+            continue;
+        }
+        selected.push(candidate.neighbor);
+        if selected.len() >= MAX_RELATED_HINT_NEIGHBORS {
+            break;
+        }
+    }
+    selected
 }
 
 fn derive_workspace_root(uri: &str, relative_file_path: &str) -> Option<PathBuf> {

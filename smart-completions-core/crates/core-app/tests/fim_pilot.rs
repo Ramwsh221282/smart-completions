@@ -190,10 +190,11 @@ async fn includes_frontend_metadata_blocks_in_the_fim_prompt() {
     fs::create_dir_all(workspace_root.join("src")).unwrap();
     fs::write(workspace_root.join("src/a.ts"), "const x = 1;\n").unwrap();
     fs::write(
-        workspace_root.join("src/dep.ts"),
-        "export const dep = 1;\nexport const depTwo = 2;\n",
+        workspace_root.join("src/high.ts"),
+        "export const high = 1;\nexport const highTwo = 2;\n",
     )
     .unwrap();
+    fs::write(workspace_root.join("src/low.ts"), "export const low = 1;\n").unwrap();
 
     let mut handler = CoreFrameHandler::new(GenerationClient::new(format!(
         "{}/completion",
@@ -202,11 +203,43 @@ async fn includes_frontend_metadata_blocks_in_the_fim_prompt() {
     let (frames, mut receiver) = unbounded_channel::<ServerFrame>();
 
     drive(&mut handler, workspace_snapshot(&workspace_root), &frames);
-    drive(
-        &mut handler,
-        workspace_completion(&workspace_root, "qwen2.5-coder", CompletionMode::Fim),
-        &frames,
-    );
+    let mut completion =
+        workspace_completion(&workspace_root, "qwen2.5-coder", CompletionMode::Fim);
+    let ClientFrame::CompletionRequest(request) = &mut completion else {
+        unreachable!();
+    };
+    request.related_file_hints = vec![
+        WireRelatedFileHint {
+            path: "src/low.ts".to_string(),
+            range: None,
+            source: "search".to_string(),
+            score_hint: 0.1,
+        },
+        WireRelatedFileHint {
+            path: "src/high.ts".to_string(),
+            range: Some(Range {
+                start_line: 0,
+                start_col: 0,
+                end_line: 0,
+                end_col: 6,
+            }),
+            source: "definition".to_string(),
+            score_hint: 0.9,
+        },
+        WireRelatedFileHint {
+            path: "src/a.ts".to_string(),
+            range: None,
+            source: "definition".to_string(),
+            score_hint: 1.0,
+        },
+        WireRelatedFileHint {
+            path: "src/missing.ts".to_string(),
+            range: None,
+            source: "search".to_string(),
+            score_hint: 0.8,
+        },
+    ];
+    drive(&mut handler, completion, &frames);
 
     assert_eq!(
         next_frame(&mut receiver).await,
@@ -223,9 +256,15 @@ async fn includes_frontend_metadata_blocks_in_the_fim_prompt() {
     let requests = server.received_requests().await.unwrap();
     let body = String::from_utf8(requests[0].body.clone()).unwrap();
     let current_uri = format!("file://{}", workspace_root.join("src/a.ts").display());
+    let high_index = body.find("<|file_sep|>src/high.ts").unwrap();
+    let low_index = body.find("<|file_sep|>src/low.ts").unwrap();
 
-    assert!(body.contains("<|file_sep|>src/dep.ts"));
-    assert!(body.contains("export const dep = 1;"));
+    assert!(high_index < low_index);
+    assert!(body.contains("<|file_sep|>src/high.ts"));
+    assert!(body.contains("export const high = 1;"));
+    assert!(body.contains("<|file_sep|>src/low.ts"));
+    assert!(!body.contains("<|file_sep|>src/a.ts\nconst x = 1;"));
+    assert!(!body.contains("<|file_sep|>src/missing.ts"));
     assert!(body.contains(&format!("<|file_sep|>diagnostics/{current_uri}")));
     assert!(body.contains("Line 1 [warning] W1: warn"));
     assert!(body.contains(&format!("<|file_sep|>outline/{current_uri}")));
