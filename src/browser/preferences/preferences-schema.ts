@@ -4,7 +4,18 @@ import { EmbeddingConfig } from '../../common/embedding-types';
 import { FIM_MODEL_IDS, getFimModule } from '../../common/fim/fim-model-registry';
 import { FimConfig } from '../../common/fim-types';
 import { DEFAULT_DIAGNOSTICS_GATE_CONFIG, NesConfig } from '../../common/nes-types';
-import { EmbedModelId, FimModelId, GenerationMode, NesModelId, VectorDbId } from '../../common/model-types';
+import {
+    COMPLETION_SCHEDULING_MODES,
+    EmbedModelId,
+    FimModelId,
+    GenerationMode,
+    NesModelId,
+    VectorDbId,
+    isNesModelId,
+    isSweepNesModelId,
+    normalizeCompletionSchedulingMode,
+    type CompletionSchedulingMode,
+} from '../../common/model-types';
 import { SweepProfileId, getSweepProfile, sweepProfileIdForModel, sweepRequestModelName } from '../../common/sweep/profiles';
 import { DEFAULT_SWEEP_FUZZY_CONFIG, DEFAULT_SWEEP_GRAPH_CONFIG, DEFAULT_SWEEP_RERANK_CONFIG } from '../../common/sweep/types';
 import type { ZetaConfig } from '../../common/zeta21/types';
@@ -19,14 +30,14 @@ const DEFAULT_FIM_RERANK_CONFIG = {
     finalTopN: 5,
 };
 
-/** Схема настроек smart-completions для FIM/NES, coordination mode и embedding-инфраструктуры. */
+/** Схема настроек smart-completions для FIM/NES, scheduling mode и embedding-инфраструктуры. */
 export const SMART_COMPLETIONS_PREFERENCE_SCHEMA: PreferenceSchema = {
     properties: {
-        'smart-completions.coordinationMode': {
+        'smart-completions.completionSchedulingMode': {
             type: 'string',
-            enum: ['exclusive-priority', 'parallel', 'fim-only', 'nes-only', 'nes-priority'],
-            default: 'exclusive-priority',
-            description: 'How FIM and NES rendering are coordinated.',
+            enum: [...COMPLETION_SCHEDULING_MODES],
+            default: 'parallel',
+            description: 'FIM/NES scheduling policy. parallel keeps both independent; idle-nes runs NES only after the edit debounce.',
         },
         'smart-completions.fim.enabled': {
             type: 'boolean',
@@ -160,7 +171,7 @@ export const SMART_COMPLETIONS_PREFERENCE_SCHEMA: PreferenceSchema = {
         },
         'smart-completions.nes.modelId': {
             type: 'string',
-            enum: ['sweep-default', 'sweep-small', 'zeta', 'zeta-2.1'],
+            enum: ['sweep-default', 'sweep-small', 'zeta-2.1'],
             default: 'sweep-default',
             description: 'Active NES model served by llama.cpp.',
         },
@@ -368,11 +379,32 @@ function forceQwen3FimEmbedder(modelId: FimModelId): boolean {
     return getFimModule(modelId).embedderId === 'qwen3-0.6b';
 }
 
-/** Читает Sweep/legacy NES prefs и собирает runtime config без дублирования model-profile логики по call sites. */
+/** Читает текущий NES modelId из preferences с валидацией; неизвестное значение нормализуется к sweep-default. */
+export function readNesModelId(preferences: PreferenceService): NesModelId {
+    const configured = preferences.get<string>('smart-completions.nes.modelId', 'sweep-default');
+    return isNesModelId(configured) ? configured : 'sweep-default';
+}
+
+/**
+ * Читает mode планирования FIM/NES; поддерживает старый coordinationMode как hidden migration input.
+ * Единственная точка нормализации: результат всегда CompletionSchedulingMode.
+ */
+export function readCompletionSchedulingMode(preferences: PreferenceService): CompletionSchedulingMode {
+    const configured = preferences.get<string | undefined>('smart-completions.completionSchedulingMode', undefined);
+    if (configured === 'parallel' || configured === 'idle-nes') {
+        return configured;
+    }
+    return normalizeCompletionSchedulingMode(
+        preferences.get<string | undefined>('smart-completions.coordinationMode', undefined),
+    );
+}
+
+/** Читает Sweep/NES prefs и собирает runtime config без дублирования model-profile логики по call sites. */
 export function readNesConfig(preferences: PreferenceService): NesConfig {
-    const modelId = preferences.get<NesModelId>('smart-completions.nes.modelId', 'sweep-default');
+    const modelId = readNesModelId(preferences);
     const smallSize = preferences.get<SweepProfileId>('smart-completions.nes.sweepSmallSize', '1.5b');
-    const profileId = sweepProfileIdForModel(modelId, smallSize);
+    const sweepModelId = isSweepNesModelId(modelId) ? modelId : 'sweep-default';
+    const profileId = sweepProfileIdForModel(sweepModelId, smallSize);
     const profile = getSweepProfile(profileId);
     return {
         modelId,

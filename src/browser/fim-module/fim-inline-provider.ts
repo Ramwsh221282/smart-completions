@@ -4,50 +4,47 @@ import { CancellationTokenSource, Disposable, DisposableCollection } from '@thei
 import { PreferenceChange, PreferenceService } from '@theia/core/lib/common/preferences/preference-service';
 import * as monaco from '@theia/monaco-editor-core';
 import type { FimConfig, FimRequest } from '../../common/fim-types';
-import type { CoordinationMode } from '../../common/model-types';
 import type { FileMode } from '../../common/mode-types';
 import { FimBackendService } from '../../common/protocol';
 import { FimContextCollector } from './data-gathering-layer/fim-context-collector';
 import { FimCompletionCache, type FimCacheKeyInput } from './fim-completion-cache';
-import { NesViewZoneRenderer } from '../nes-render/nes-view-zone-renderer';
 import { readFimConfig } from '../preferences/preferences-schema';
 import { fileModeForLanguage } from '../shared/file-mode';
 
+/** Регистрирует Monaco inline completions provider для FIM ghost text независимо от NES pipeline. */
 @injectable()
 export class FimInlineProvider implements FrontendApplicationContribution, monaco.languages.InlineCompletionsProvider, Disposable {
     @inject(FimBackendService) private readonly fim!: FimBackendService;
     @inject(FimCompletionCache) private readonly cache!: FimCompletionCache;
     @inject(FimContextCollector) private readonly collector!: FimContextCollector;
     @inject(PreferenceService) private readonly preferences!: PreferenceService;
-    @inject(NesViewZoneRenderer) private readonly nesRenderer!: NesViewZoneRenderer;
 
     private readonly toDispose = new DisposableCollection();
     private config!: FimConfig;
+    // Флаг включения FIM из настроек; единственный gate для inline completions.
     private enabled = true;
-    private coordinationMode: CoordinationMode = 'exclusive-priority';
     debounceDelayMs = 120;
     displayName = 'Smart Completions FIM';
 
+    /** Регистрирует inline completions provider и подписывается на изменения FIM-настроек. */
     async onStart(): Promise<void> {
         await this.pushConfig();
         this.toDispose.push(monaco.languages.registerInlineCompletionsProvider([{ scheme: 'file' }, { scheme: 'untitled' }], this));
         this.toDispose.push(this.preferences.onPreferenceChanged((event: PreferenceChange) => {
-            if (event.preferenceName.startsWith('smart-completions.fim') || event.preferenceName === 'smart-completions.coordinationMode') {
+            if (event.preferenceName.startsWith('smart-completions.fim')) {
                 void this.pushConfig();
             }
         }));
     }
 
+    /** Обрабатывает Monaco inline completions запрос; gate только по fim.enabled и trigger rules. */
     async provideInlineCompletions(
         model: monaco.editor.ITextModel,
         position: monaco.Position,
         context: monaco.languages.InlineCompletionContext,
         token: monaco.CancellationToken,
     ): Promise<monaco.languages.InlineCompletions | undefined> {
-        if (!this.enabled || this.coordinationMode === 'nes-only') {
-            return undefined;
-        }
-        if (this.coordinationMode === 'nes-priority' && this.nesRenderer.isVisible()) {
+        if (!this.enabled) {
             return undefined;
         }
         const fileMode = fileModeForLanguage(model.getLanguageId());
@@ -71,28 +68,35 @@ export class FimInlineProvider implements FrontendApplicationContribution, monac
     private async pushConfig(): Promise<void> {
         this.config = readFimConfig(this.preferences);
         this.enabled = this.preferences.get<boolean>('smart-completions.fim.enabled', true);
-        this.coordinationMode = this.preferences.get<CoordinationMode>('smart-completions.coordinationMode', 'exclusive-priority');
         this.debounceDelayMs = this.config.debounceMs;
         this.cache.clear();
     }
 
+    /**
+     * Выполняет backend-запрос с staleness guard: если версия модели изменилась
+     * за время async context collection или completion, результат отбрасывается.
+     */
     private async requestFreshCompletion(
         model: monaco.editor.ITextModel,
         position: monaco.Position,
         prepared: PreparedFimRequest,
         token: monaco.CancellationToken,
     ): Promise<monaco.languages.InlineCompletions | undefined> {
+        const version = model.getVersionId();
         const source = new CancellationTokenSource();
         const listener = token.onCancellationRequested(() => source.cancel());
         try {
             const fimContext = await this.collectContext(model, position);
+            if (token.isCancellationRequested || model.getVersionId() !== version) {
+                return undefined;
+            }
             const response = await this.fim.complete({
                 requestId: createRequestId(),
                 ...prepared.request,
                 relatedFiles: fimContext.relatedFiles,
                 recentEdits: fimContext.recentEdits,
             }, source.token);
-            if (token.isCancellationRequested || !response.text) {
+            if (token.isCancellationRequested || model.getVersionId() !== version || !response.text) {
                 return undefined;
             }
             this.cache.store(prepared.cacheKey, response.text);
@@ -172,9 +176,8 @@ function shouldCollectFimContext(config: FimConfig): boolean {
     return config.contextSources.recentEdits || config.contextSources.repoContext;
 }
 
+/** Ограничивает автотриггер FIM допустимыми символами-разделителями, чтобы не срабатывать внутри слова. */
 function shouldTrigger(model: monaco.editor.ITextModel, position: monaco.Position, fileMode: 'code' | 'prose'): boolean {
-    // Автотриггер ограничен небольшим набором символов, чтобы FIM срабатывал после естественных boundary,
-    // а не на каждом keystroke внутри слова или в середине уже печатаемого идентификатора.
     if (position.column < model.getLineMaxColumn(position.lineNumber)) {
         const next = model.getLineContent(position.lineNumber).charAt(position.column - 1);
         if (/\w/.test(next)) {

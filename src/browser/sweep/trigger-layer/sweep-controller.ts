@@ -3,12 +3,12 @@ import { CancellationTokenSource, Disposable, DisposableCollection } from '@thei
 import { PreferenceChange, PreferenceService } from '@theia/core/lib/common/preferences/preference-service';
 import { inject, injectable } from '@theia/core/shared/inversify';
 import * as monaco from '@theia/monaco-editor-core';
-import { CoordinationMode } from '../../../common/model-types';
-import { NesConfig } from '../../../common/nes-types';
+import type { CompletionSchedulingMode } from '../../../common/model-types';
+import type { NesConfig, NesResponse } from '../../../common/nes-types';
 import { NesBackendService } from '../../../common/protocol';
 import { SweepLogger } from '../../../common/sweep/logger';
 import { NesAcceptHookContext, NesViewZoneRenderer } from '../../nes-render/nes-view-zone-renderer';
-import { readNesConfig } from '../../preferences/preferences-schema';
+import { readCompletionSchedulingMode, readNesConfig } from '../../preferences/preferences-schema';
 import { fileModeForLanguage } from '../../shared/file-mode';
 import { SweepContextCollector } from '../data-gathering-layer/sweep-context-collector';
 import { SweepEditHistoryRecorder } from '../data-gathering-layer/sweep-edit-history-recorder';
@@ -17,6 +17,13 @@ import { DiagnosticsDeltaSnapshot, DiagnosticsDeltaVerifier } from '../quality/d
 
 // Логгер триггерного слоя Sweep на фронтенде.
 const LOG = new SweepLogger('browser:trigger');
+
+// Снимок состояния редактора на момент trigger; null означает что editor потерял focus или модель.
+interface SweepTriggerState {
+    editor: monaco.editor.ICodeEditor;
+    model: monaco.editor.ITextModel | null;
+    position: monaco.Position | null;
+}
 
 /** Триггерный контроллер Sweep: слушает редакторы, собирает контекст, вызывает бекенд и передаёт правки рендереру. */
 @injectable()
@@ -43,11 +50,11 @@ export class SweepController implements FrontendApplicationContribution, Disposa
     private config!: NesConfig;
     // Флаг глобального включения NES из настроек.
     private enabled = true;
-    // Режим координации FIM и NES (exclusive-priority / fim-only / nes-only).
-    private coordinationMode: CoordinationMode = 'exclusive-priority';
+    // Политика планирования FIM/NES; заменяет старый coordinationMode.
+    private schedulingMode: CompletionSchedulingMode = 'parallel';
     // Таймер debounce для откладывания trigger после последнего события редактора.
     private timer: ReturnType<typeof setTimeout> | undefined;
-    // Timestamp последнего изменения контента; используется для exclusive-priority гейтинга.
+    // Timestamp последнего изменения контента; используется для idle-nes гейтинга.
     private lastChangeAt = 0;
     // Токен отмены текущего in-flight Sweep запроса.
     private inFlight: CancellationTokenSource | undefined;
@@ -68,7 +75,11 @@ export class SweepController implements FrontendApplicationContribution, Disposa
         }
         this.toDispose.push(monaco.editor.onDidCreateEditor(editor => this.trackEditor(editor)));
         this.toDispose.push(this.preferences.onPreferenceChanged((event: PreferenceChange) => {
-            if (event.preferenceName.startsWith('smart-completions.nes') || event.preferenceName === 'smart-completions.coordinationMode') {
+            if (
+                event.preferenceName.startsWith('smart-completions.nes') ||
+                event.preferenceName === 'smart-completions.completionSchedulingMode' ||
+                event.preferenceName === 'smart-completions.coordinationMode'
+            ) {
                 void this.pushConfig();
             }
         }));
@@ -140,124 +151,159 @@ export class SweepController implements FrontendApplicationContribution, Disposa
         disposable.push(editor.onDidChangeCursorPosition(() => this.schedule(editor)));
         disposable.push(editor.onDidDispose(() => disposable.dispose()));
         this.editorDisposables.set(editor, disposable);
-        if (process.env.NODE_ENV === 'development') {
-            LOG.debug('Sweep editor tracking enabled');
-        }
     }
 
-    /**
-     * Откладывает вызов trigger на debounceMs, сбрасывая предыдущий таймер.
-     * Пропускает вызов если NES отключён или активен режим fim-only.
-     */
+    /** Откладывает вызов trigger на debounceMs, сбрасывая предыдущий таймер. */
     private schedule(editor: monaco.editor.ICodeEditor): void {
-        if (!this.enabled || this.coordinationMode === 'fim-only' || !this.isActiveModel()) {
-            if (process.env.NODE_ENV === 'development') {
-                LOG.debug('Sweep schedule skipped', { enabled: this.enabled, coordinationMode: this.coordinationMode, activeModel: this.isActiveModel() });
-            }
+        if (!this.canSchedule()) {
             return;
         }
         if (this.timer) {
             clearTimeout(this.timer);
         }
         this.timer = setTimeout(() => void this.trigger(editor), this.config.debounceMs);
-        if (process.env.NODE_ENV === 'development') {
-            LOG.debug('Sweep trigger scheduled', { debounceMs: this.config.debounceMs });
-        }
     }
 
     /**
-     * Полный цикл одного Sweep-предсказания: снимок состояния → сбор контекста →
-     * построение запроса → вызов бекенда → рендер подсказки. На каждом шаге
-     * проверяет отмену и версию модели; при несовпадении — прерывает без рендера.
+     * Полный цикл одного Sweep-предсказания: снимок → сбор контекста →
+     * запрос бекенда → рендер. На каждом шаге проверяет staleness.
      */
     private async trigger(editor: monaco.editor.ICodeEditor): Promise<void> {
-        const model = editor.getModel();
-        const position = editor.getPosition();
-        if (!model || !position || !this.enabled || this.coordinationMode === 'fim-only' || !this.isActiveModel()) {
-            if (process.env.NODE_ENV === 'development') {
-                LOG.debug('Sweep trigger skipped before snapshot', { hasModel: Boolean(model), hasPosition: Boolean(position), enabled: this.enabled, coordinationMode: this.coordinationMode, activeModel: this.isActiveModel() });
-            }
-            return;
-        }
-        if (this.coordinationMode === 'exclusive-priority' && Date.now() - this.lastChangeAt < this.config.debounceMs) {
-            if (process.env.NODE_ENV === 'development') {
-                LOG.debug('Sweep trigger skipped by exclusive-priority timing', { sinceLastChangeMs: Date.now() - this.lastChangeAt, debounceMs: this.config.debounceMs });
-            }
-            return;
-        }
+        const state = this.readTriggerState(editor);
+        if (!this.canTrigger(state)) return;
+        if (!this.canRunBySchedulingPolicy()) return;
 
-        const snapshot = this.requestBuilder.snapshot(model, position, this.history, this.config.profile);
-        if (!snapshot) {
-            return;
-        }
+        const snapshot = this.createSnapshot(state);
+        if (!snapshot) return;
 
+        const source = this.startRequest();
+        const version = state.model.getVersionId();
+
+        LOG.info('Sweep trigger started', { uri: state.model.uri.toString(), version, modelId: this.config.modelId });
+        try {
+            const collected = await this.collectContext(state, snapshot, source);
+            if (this.isStale(state.model, version, source)) return;
+
+            const request = this.requestBuilder.request(state.model, snapshot, collected);
+            const response = await this.nes.predict(request, source.token);
+            if (this.isStale(state.model, version, source)) return;
+
+            this.renderIfUseful(state.editor, response);
+        } catch (error) {
+            this.handleTriggerError(error);
+        } finally {
+            this.finishRequest(source);
+        }
+    }
+
+    /** Обновляет конфиг из preferences, останавливает если модель неактивна, отправляет config на бекенд. */
+    private async pushConfig(): Promise<void> {
+        this.readControllerConfig();
+        this.stopIfInactive();
+        await this.pushBackendConfigIfActive();
+    }
+
+    private readControllerConfig(): void {
+        this.config = readNesConfig(this.preferences);
+        this.enabled = this.preferences.get<boolean>('smart-completions.nes.enabled', true);
+        this.schedulingMode = readCompletionSchedulingMode(this.preferences);
+    }
+
+    /** Отменяет in-flight запрос и скрывает подсказку если активная модель сменилась на non-Sweep. */
+    private stopIfInactive(): void {
+        if (this.isActiveModel()) return;
+        this.inFlight?.cancel();
+        if (this.timer) {
+            clearTimeout(this.timer);
+            this.timer = undefined;
+        }
+        this.renderer.dismiss();
+    }
+
+    /** Отправляет текущий NesConfig на бекенд только если Sweep является активной моделью. */
+    private async pushBackendConfigIfActive(): Promise<void> {
+        if (!this.isActiveModel()) return;
+        await this.nes.configure(this.config);
+    }
+
+    private canSchedule(): boolean {
+        return this.enabled && this.isActiveModel();
+    }
+
+    private readTriggerState(editor: monaco.editor.ICodeEditor): SweepTriggerState {
+        return {
+            editor,
+            model: editor.getModel(),
+            position: editor.getPosition(),
+        };
+    }
+
+    private canTrigger(state: SweepTriggerState): state is SweepTriggerState & { model: monaco.editor.ITextModel; position: monaco.Position } {
+        return Boolean(state.model && state.position && this.enabled && this.isActiveModel());
+    }
+
+    /** Разрешает trigger в соответствии с политикой планирования; idle-nes требует истечения debounce. */
+    private canRunBySchedulingPolicy(): boolean {
+        if (this.schedulingMode !== 'idle-nes') return true;
+        return Date.now() - this.lastChangeAt >= this.config.debounceMs;
+    }
+
+    private createSnapshot(state: SweepTriggerState & { model: monaco.editor.ITextModel; position: monaco.Position }) {
+        return this.requestBuilder.snapshot(state.model, state.position, this.history, this.config.profile);
+    }
+
+    /** Отменяет предыдущий запрос и создаёт новый CancellationTokenSource для следующего цикла. */
+    private startRequest(): CancellationTokenSource {
         this.inFlight?.cancel();
         this.inFlight?.dispose();
         const source = new CancellationTokenSource();
         this.inFlight = source;
-        const version = model.getVersionId();
-        LOG.info('Sweep trigger started', { uri: model.uri.toString(), version, modelId: this.config.modelId });
-        try {
-            const collected = await this.collector.collect({
-                model,
-                position,
-                languageId: model.getLanguageId(),
-                windowText: snapshot.windowText,
-                cursorOffset: snapshot.cursorOffset,
-                recentEdits: snapshot.recentEdits,
-                diagnostics: snapshot.diagnostics,
-                relatedTopN: this.config.relatedTopN,
-                queryMaxChars: this.config.queryMaxChars,
-            });
-            if (source.token.isCancellationRequested || model.getVersionId() !== version) {
-                LOG.info('Sweep trigger cancelled after context collection', { cancelled: source.token.isCancellationRequested, versionChanged: model.getVersionId() !== version });
-                return;
-            }
-            const request = this.requestBuilder.request(model, snapshot, collected);
-            const response = await this.nes.predict(request, source.token);
-            if (source.token.isCancellationRequested || model.getVersionId() !== version) {
-                LOG.info('Sweep trigger produced stale edit', { cancelled: source.token.isCancellationRequested, versionChanged: model.getVersionId() !== version, edits: response.edits.length });
-                return;
-            }
-            if (response.edits.length === 0) {
-                LOG.info('Sweep trigger produced no visible edit', { edits: response.edits.length });
-                return;
-            }
-            this.renderer.show(editor, response);
-            LOG.info('Sweep suggestion rendered', { edits: response.edits.length, modelId: response.modelId });
-        } catch (error) {
-            LOG.warn('Sweep trigger failed', { error: error instanceof Error ? error.message : String(error) });
-            return;
-        } finally {
-            if (this.inFlight === source) {
-                this.inFlight = undefined;
-            }
-            source.dispose();
-        }
+        return source;
     }
 
-    /**
-     * Читает preferences, обновляет локальные поля enabled и coordinationMode,
-     * и отправляет актуальный NesConfig на бекенд через nes.configure().
-     */
-    private async pushConfig(): Promise<void> {
-        this.config = readNesConfig(this.preferences);
-        this.enabled = this.preferences.get<boolean>('smart-completions.nes.enabled', true);
-        this.coordinationMode = this.preferences.get<CoordinationMode>('smart-completions.coordinationMode', 'exclusive-priority');
-        if (!this.isActiveModel()) {
-            this.inFlight?.cancel();
-            if (this.timer) {
-                clearTimeout(this.timer);
-                this.timer = undefined;
-            }
-            this.renderer.dismiss();
+    private async collectContext(
+        state: SweepTriggerState & { model: monaco.editor.ITextModel; position: monaco.Position },
+        snapshot: ReturnType<SweepRequestBuilder['snapshot']> & {},
+        _source: CancellationTokenSource,
+    ) {
+        return this.collector.collect({
+            model: state.model,
+            position: state.position,
+            languageId: state.model.getLanguageId(),
+            windowText: snapshot.windowText,
+            cursorOffset: snapshot.cursorOffset,
+            recentEdits: snapshot.recentEdits,
+            diagnostics: snapshot.diagnostics,
+            relatedTopN: this.config.relatedTopN,
+            queryMaxChars: this.config.queryMaxChars,
+        });
+    }
+
+    /** Проверяет staleness по версии модели или отмене запроса; при true trigger прерывается без рендера. */
+    private isStale(
+        model: monaco.editor.ITextModel,
+        version: number,
+        source: CancellationTokenSource,
+    ): boolean {
+        return source.token.isCancellationRequested || model.getVersionId() !== version;
+    }
+
+    private renderIfUseful(editor: monaco.editor.ICodeEditor, response: NesResponse): void {
+        if (response.edits.length === 0) return;
+        this.renderer.show(editor, response);
+        LOG.info('Sweep suggestion rendered', { edits: response.edits.length, modelId: response.modelId });
+    }
+
+    private handleTriggerError(error: unknown): void {
+        // release build strips logs; trigger failures remain fail-open.
+        LOG.warn('Sweep trigger failed', { error: error instanceof Error ? error.message : String(error) });
+    }
+
+    private finishRequest(source: CancellationTokenSource): void {
+        if (this.inFlight === source) {
+            this.inFlight = undefined;
         }
-        try {
-            await this.nes.configure(this.config);
-            LOG.info('Sweep controller pushed NES config', { modelId: this.config.modelId, enabled: this.enabled, coordinationMode: this.coordinationMode });
-        } catch (error) {
-            LOG.warn('Sweep controller failed to push config', { error: error instanceof Error ? error.message : String(error) });
-        }
+        source.dispose();
     }
 
     private isActiveModel(): boolean {

@@ -3,19 +3,26 @@ import { CancellationTokenSource, Disposable, DisposableCollection } from '@thei
 import { PreferenceChange, PreferenceService } from '@theia/core/lib/common/preferences/preference-service';
 import { inject, injectable } from '@theia/core/shared/inversify';
 import * as monaco from '@theia/monaco-editor-core';
-import type { CoordinationMode } from '../../../common/model-types';
+import type { CompletionSchedulingMode } from '../../../common/model-types';
 import type { NesResponse } from '../../../common/nes-types';
 import { ZetaBackendService } from '../../../common/protocol';
 import type { ZetaConfig } from '../../../common/zeta21/types';
 import { ZetaLogger } from '../../../common/zeta21/logger';
 import { NesViewZoneRenderer } from '../../nes-render/nes-view-zone-renderer';
-import { readZetaConfig } from '../../preferences/preferences-schema';
+import { readCompletionSchedulingMode, readZetaConfig } from '../../preferences/preferences-schema';
 import { ZetaContextCollector } from '../data-gathering-layer/zeta-context-collector';
 import { ZetaEditHistoryRecorder } from '../data-gathering-layer/zeta-edit-history-recorder';
 import { ZetaRequestBuilder } from '../data-formatting-layer/zeta-request-builder';
 
 // Логгер trigger-layer нужен для сквозной диагностики zeta21 trigger-cycle на фронтенде.
 const LOG = new ZetaLogger('browser:trigger');
+
+// Снимок состояния редактора на момент trigger; null означает что editor потерял focus или модель.
+interface ZetaTriggerState {
+    editor: monaco.editor.ICodeEditor;
+    model: monaco.editor.ITextModel | null;
+    position: monaco.Position | null;
+}
 
 /** Zeta trigger controller слушает редакторы, собирает контекст и вызывает отдельный zeta21 backend path. */
 @injectable()
@@ -30,9 +37,12 @@ export class ZetaController implements FrontendApplicationContribution, Disposab
     private readonly editorDisposables = new WeakMap<monaco.editor.ICodeEditor, DisposableCollection>();
     private readonly requestBuilder = new ZetaRequestBuilder();
     private config!: ZetaConfig;
+    // Флаг глобального включения NES из настроек.
     private enabled = true;
-    private coordinationMode: CoordinationMode = 'exclusive-priority';
+    // Политика планирования FIM/NES; заменяет старый coordinationMode.
+    private schedulingMode: CompletionSchedulingMode = 'parallel';
     private timer: ReturnType<typeof setTimeout> | undefined;
+    // Timestamp последнего изменения контента; используется для idle-nes гейтинга.
     private lastChangeAt = 0;
     private inFlight: CancellationTokenSource | undefined;
 
@@ -45,7 +55,11 @@ export class ZetaController implements FrontendApplicationContribution, Disposab
         }
         this.toDispose.push(monaco.editor.onDidCreateEditor(editor => this.trackEditor(editor)));
         this.toDispose.push(this.preferences.onPreferenceChanged((event: PreferenceChange) => {
-            if (event.preferenceName.startsWith('smart-completions.nes') || event.preferenceName === 'smart-completions.coordinationMode') {
+            if (
+                event.preferenceName.startsWith('smart-completions.nes') ||
+                event.preferenceName === 'smart-completions.completionSchedulingMode' ||
+                event.preferenceName === 'smart-completions.coordinationMode'
+            ) {
                 void this.pushConfig();
             }
         }));
@@ -91,8 +105,9 @@ export class ZetaController implements FrontendApplicationContribution, Disposab
         this.editorDisposables.set(editor, disposable);
     }
 
+    /** Откладывает вызов trigger на debounceMs, сбрасывая предыдущий таймер. */
     private schedule(editor: monaco.editor.ICodeEditor): void {
-        if (!this.enabled || this.coordinationMode === 'fim-only' || !this.isActiveModel()) {
+        if (!this.canSchedule()) {
             return;
         }
         if (this.timer) {
@@ -101,79 +116,142 @@ export class ZetaController implements FrontendApplicationContribution, Disposab
         this.timer = setTimeout(() => void this.trigger(editor), this.config.debounceMs);
     }
 
+    /**
+     * Полный цикл одного Zeta-предсказания: снимок → сбор контекста →
+     * запрос бекенда → рендер. На каждом шаге проверяет staleness.
+     */
     private async trigger(editor: monaco.editor.ICodeEditor): Promise<void> {
-        const model = editor.getModel();
-        const position = editor.getPosition();
-        if (!model || !position || !this.enabled || this.coordinationMode === 'fim-only' || !this.isActiveModel()) {
-            return;
+        const state = this.readTriggerState(editor);
+        if (!this.canTrigger(state)) return;
+        if (!this.canRunBySchedulingPolicy()) return;
+
+        const diagnostics = collectDiagnostics(state.model);
+        const snapshot = await this.requestBuilder.snapshot(state.model, state.position, this.history, diagnostics);
+        if (!snapshot) return;
+
+        const source = this.startRequest();
+        const version = state.model.getVersionId();
+
+        LOG.info('Zeta trigger started', { uri: state.model.uri.toString(), version, modelId: 'zeta-2.1' });
+        try {
+            const collected = await this.collectZetaContext(state, snapshot);
+            if (this.isStale(state.model, version, source)) return;
+
+            const request = this.requestBuilder.request(state.model, snapshot, collected);
+            const response = await this.zeta.predict(request, source.token);
+            if (this.isStale(state.model, version, source)) return;
+
+            this.renderIfUseful(state.editor, response);
+        } catch (error) {
+            this.handleTriggerError(error);
+        } finally {
+            this.finishRequest(source);
         }
-        if (this.coordinationMode === 'exclusive-priority' && Date.now() - this.lastChangeAt < this.config.debounceMs) {
-            return;
+    }
+
+    /** Обновляет конфиг из preferences, останавливает если модель неактивна, отправляет config на бекенд. */
+    private async pushConfig(): Promise<void> {
+        this.readControllerConfig();
+        this.stopIfInactive();
+        await this.pushBackendConfigIfActive();
+    }
+
+    private readControllerConfig(): void {
+        this.config = readZetaConfig(this.preferences);
+        this.enabled = this.preferences.get<boolean>('smart-completions.nes.enabled', true);
+        this.schedulingMode = readCompletionSchedulingMode(this.preferences);
+    }
+
+    /** Отменяет in-flight запрос и скрывает подсказку если активная модель сменилась. */
+    private stopIfInactive(): void {
+        if (this.isActiveModel()) return;
+        this.inFlight?.cancel();
+        if (this.timer) {
+            clearTimeout(this.timer);
+            this.timer = undefined;
         }
-        const diagnostics = collectDiagnostics(model);
-        const snapshot = await this.requestBuilder.snapshot(model, position, this.history, diagnostics);
-        if (!snapshot) {
-            return;
-        }
+        this.renderer.dismiss();
+    }
+
+    /** Отправляет текущий ZetaConfig на бекенд только если zeta-2.1 является активной моделью. */
+    private async pushBackendConfigIfActive(): Promise<void> {
+        if (!this.isActiveModel()) return;
+        await this.zeta.configure(this.config);
+    }
+
+    private canSchedule(): boolean {
+        return this.enabled && this.isActiveModel();
+    }
+
+    private readTriggerState(editor: monaco.editor.ICodeEditor): ZetaTriggerState {
+        return {
+            editor,
+            model: editor.getModel(),
+            position: editor.getPosition(),
+        };
+    }
+
+    private canTrigger(state: ZetaTriggerState): state is ZetaTriggerState & { model: monaco.editor.ITextModel; position: monaco.Position } {
+        return Boolean(state.model && state.position && this.enabled && this.isActiveModel());
+    }
+
+    /** Разрешает trigger в соответствии с политикой планирования; idle-nes требует истечения debounce. */
+    private canRunBySchedulingPolicy(): boolean {
+        if (this.schedulingMode !== 'idle-nes') return true;
+        return Date.now() - this.lastChangeAt >= this.config.debounceMs;
+    }
+
+    /** Отменяет предыдущий запрос и создаёт новый CancellationTokenSource для следующего цикла. */
+    private startRequest(): CancellationTokenSource {
         this.inFlight?.cancel();
         this.inFlight?.dispose();
         const source = new CancellationTokenSource();
         this.inFlight = source;
-        const version = model.getVersionId();
-        LOG.info('Zeta trigger started', { uri: model.uri.toString(), version, modelId: 'zeta-2.1' });
-        try {
-            const collected = await this.collector.collect({
-                model,
-                position,
-                languageId: model.getLanguageId(),
-                windowText: snapshot.windowText,
-                cursorOffset: snapshot.cursorOffset,
-                recentEdits: snapshot.recentEdits,
-                diagnostics: snapshot.diagnostics,
-                relatedTopN: this.config.relatedTopN,
-                queryMaxChars: this.config.queryMaxChars,
-            });
-            if (source.token.isCancellationRequested || model.getVersionId() !== version) {
-                return;
-            }
-            const request = this.requestBuilder.request(model, snapshot, collected);
-            const response = await this.zeta.predict(request, source.token);
-            if (source.token.isCancellationRequested || model.getVersionId() !== version) {
-                return;
-            }
-            if (response.edits.length === 0) {
-                return;
-            }
-            this.renderer.show(editor, toRendererResponse(response));
-            LOG.info('Zeta suggestion rendered', { edits: response.edits.length, modelId: response.modelId });
-        } catch (error) {
-            LOG.warn('Zeta trigger failed', { error: error instanceof Error ? error.message : String(error) });
-        } finally {
-            if (this.inFlight === source) {
-                this.inFlight = undefined;
-            }
-            source.dispose();
-        }
+        return source;
     }
 
-    private async pushConfig(): Promise<void> {
-        this.config = readZetaConfig(this.preferences);
-        this.enabled = this.preferences.get<boolean>('smart-completions.nes.enabled', true);
-        this.coordinationMode = this.preferences.get<CoordinationMode>('smart-completions.coordinationMode', 'exclusive-priority');
-        if (!this.isActiveModel()) {
-            this.inFlight?.cancel();
-            if (this.timer) {
-                clearTimeout(this.timer);
-                this.timer = undefined;
-            }
-            this.renderer.dismiss();
+    private async collectZetaContext(
+        state: ZetaTriggerState & { model: monaco.editor.ITextModel; position: monaco.Position },
+        snapshot: Awaited<ReturnType<ZetaRequestBuilder['snapshot']>> & {},
+    ) {
+        return this.collector.collect({
+            model: state.model,
+            position: state.position,
+            languageId: state.model.getLanguageId(),
+            windowText: snapshot.windowText,
+            cursorOffset: snapshot.cursorOffset,
+            recentEdits: snapshot.recentEdits,
+            diagnostics: snapshot.diagnostics,
+            relatedTopN: this.config.relatedTopN,
+            queryMaxChars: this.config.queryMaxChars,
+        });
+    }
+
+    /** Проверяет staleness по версии модели или отмене запроса; при true trigger прерывается без рендера. */
+    private isStale(
+        model: monaco.editor.ITextModel,
+        version: number,
+        source: CancellationTokenSource,
+    ): boolean {
+        return source.token.isCancellationRequested || model.getVersionId() !== version;
+    }
+
+    private renderIfUseful(editor: monaco.editor.ICodeEditor, response: Awaited<ReturnType<ZetaBackendService['predict']>>): void {
+        if (response.edits.length === 0) return;
+        this.renderer.show(editor, toRendererResponse(response));
+        LOG.info('Zeta suggestion rendered', { edits: response.edits.length, modelId: response.modelId });
+    }
+
+    private handleTriggerError(error: unknown): void {
+        // release build strips logs; trigger failures remain fail-open.
+        LOG.warn('Zeta trigger failed', { error: error instanceof Error ? error.message : String(error) });
+    }
+
+    private finishRequest(source: CancellationTokenSource): void {
+        if (this.inFlight === source) {
+            this.inFlight = undefined;
         }
-        try {
-            await this.zeta.configure(this.config);
-            LOG.info('Zeta controller pushed config', { enabled: this.enabled, coordinationMode: this.coordinationMode, modelId: 'zeta-2.1' });
-        } catch (error) {
-            LOG.warn('Zeta controller failed to push config', { error: error instanceof Error ? error.message : String(error) });
-        }
+        source.dispose();
     }
 
     private isActiveModel(): boolean {
@@ -210,9 +288,6 @@ function collectDiagnostics(model: monaco.editor.ITextModel): import('../../../c
             message: marker.message,
             code: marker.code ? String(marker.code) : undefined,
         };
-    }
-    if (process.env.NODE_ENV === 'development') {
-        LOG.debug('Zeta diagnostics collected from Monaco', { uri: model.uri.toString(), diagnostics: diagnostics.length });
     }
     return diagnostics;
 }

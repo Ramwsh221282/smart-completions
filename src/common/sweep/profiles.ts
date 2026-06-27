@@ -1,4 +1,4 @@
-import type { NesModelId } from '../model-types';
+import type { SweepNesModelId } from '../model-types';
 
 // `as const`-объект вместо enum, чтобы TypeScript не генерировал рантайм-объект и значения инлайнились в местах использования.
 export const SWEEP_PROFILE_IDS = {
@@ -79,9 +79,9 @@ export function getSweepProfile(profileId: SweepProfileId): SweepModelProfile {
 
 /**
  * Резолвит ID профиля по modelId и под-настройке размера; sweep-small делится на 1.5B и 0.5B
- * с разными бюджетами контекста и генерации.
+ * с разными бюджетами контекста и генерации. Принимает только Sweep modelId — zeta-2.1 передавать нельзя.
  */
-export function sweepProfileIdForModel(modelId: NesModelId, smallSize: SweepProfileId): SweepProfileId {
+export function sweepProfileIdForModel(modelId: SweepNesModelId, smallSize: SweepProfileId): SweepProfileId {
     return modelId === 'sweep-small' ? smallSize : 'v2-7b';
 }
 

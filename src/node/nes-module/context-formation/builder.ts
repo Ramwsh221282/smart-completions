@@ -39,7 +39,7 @@ export interface BuiltNesPrompt {
     stop: string[];
     maxTokens: number;
     model: string;
-    format: 'sweep' | 'zeta' | 'zeta-2.1';
+    format: 'sweep' | 'zeta-2.1';
     /** true — обязательное ядро (original/current/updated) не помещается в окно модели; подсказку не делаем. */
     overflow: boolean;
 }
@@ -56,8 +56,6 @@ export function buildNesPrompt(input: BuildNesPromptInput): BuiltNesPrompt {
     switch (input.modelId) {
         case 'zeta-2.1':
             return buildZeta21Prompt(input, trimmed, maxTokens);
-        case 'zeta':
-            return buildZetaPrompt(input, trimmed, maxTokens);
         default:
             return buildSweepPromptFromLayer({ ...input, modelId: input.modelId === 'sweep-small' ? 'sweep-small' : 'sweep-default' });
     }
@@ -296,31 +294,6 @@ function buildSweepPrompt(input: BuildNesPromptInput, trimmed: TrimmedNesContext
         maxTokens,
         model: input.modelId === 'sweep-small' ? 'sweep-next-edit-small' : 'sweep-next-edit-v2',
         format: 'sweep',
-        overflow: trimmed.overflow,
-    };
-}
-
-function buildZetaPrompt(input: BuildNesPromptInput, trimmed: TrimmedNesContext, maxTokens: number): BuiltNesPrompt {
-    const currentWindow = insertCursor(trimmed.windowText, trimmed.cursorOffset, '<|cursor|>');
-    const prompt = [
-        '<[fim-prefix]>',
-        '<filename>edit_history',
-        formatRecentEdits(trimmed.recentEdits),
-        '<filename>retrieval',
-        formatNeighbors(trimmed.neighbors),
-        `<filename>${input.filePath}`,
-        '<<<<<<< CURRENT',
-        currentWindow,
-        '=======',
-        '<[fim-suffix]>',
-        '<[fim-middle]>',
-    ].join('\n');
-    return {
-        prompt,
-        stop: ['>>>>>>> UPDATED', '<|marker_2|>', '<|endoftext|>'],
-        maxTokens,
-        model: 'zeta',
-        format: 'zeta',
         overflow: trimmed.overflow,
     };
 }

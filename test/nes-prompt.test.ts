@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildNesPrompt, formatRecentEdits } from '../src/node/nes-module/context-formation/builder';
+import { formatRecentEdits } from '../src/node/nes-module/context-formation/builder';
 import { buildSweepPrompt, unifiedDiffToOriginalUpdated } from '../src/node/sweep/prompt-creating-layer/sweep-prompt-builder';
 import { RecentEdit } from '../src/common/edit-history-types';
 import { reconstructOriginalWindow } from '../src/common/sweep/original-window-reconstruction';
@@ -319,22 +319,6 @@ test('sweep outline renders as pseudo-file in zone B', () => {
     assert.ok(built.prompt.includes('<|file_sep|>outline/src/a.ts\nclass A [1:0-3:1]'));
 });
 
-test('zeta prompt uses fim sections and current region marker', () => {
-    const built = buildNesPrompt({
-        modelId: 'zeta',
-        filePath: 'src/a.ts',
-        windowText: 'abc',
-        cursorOffset: 1,
-        recentEdits,
-        editVolume: 'large',
-    });
-
-    assert.ok(built.prompt.startsWith('<[fim-prefix]>'));
-    assert.ok(built.prompt.includes('<<<<<<< CURRENT'));
-    assert.ok(built.prompt.includes('a<|cursor|>bc'));
-    assert.equal(built.format, 'zeta');
-    assert.equal(built.maxTokens, 512);
-});
 
 test('formatRecentEdits strips file headers from stored diffs', () => {
     const formatted = formatRecentEdits(recentEdits);
