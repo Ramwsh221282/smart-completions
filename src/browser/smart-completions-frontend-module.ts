@@ -3,7 +3,8 @@ import { FrontendApplicationContribution, KeybindingContribution } from '@theia/
 import { CommandContribution } from '@theia/core/lib/common';
 import { PreferenceContribution } from '@theia/core/lib/common/preferences/preference-schema';
 import { SMART_COMPLETIONS_PREFERENCE_SCHEMA } from './preferences/preferences-schema';
-import { bindEmbeddingProxy, bindFimProxy, bindNesProxy, bindSweepGraphProxy, bindZetaProxy } from './proxies';
+import { bindCoreProxy, bindEmbeddingProxy, bindFimProxy, bindNesProxy, bindSweepGraphProxy, bindZetaProxy } from './proxies';
+import { CoreDocumentSyncContribution } from './core/core-document-sync-contribution';
 import { EmbeddingConfigSync } from './embedding/config-sync';
 import { SmartCompletionsStatusBar } from './status-bar/status-bar';
 import { SmartCompletionsCommands } from './commands';
@@ -51,6 +52,10 @@ export default new ContainerModule(bind => {
     bindZetaProxy(bind);
     bindEmbeddingProxy(bind);
     bindSweepGraphProxy(bind);
+    bindCoreProxy(bind);
+
+    bind(CoreDocumentSyncContribution).toSelf().inSingletonScope();
+    bind(FrontendApplicationContribution).toService(CoreDocumentSyncContribution);
 
     bind(SweepEditHistoryRecorder).toSelf().inSingletonScope();
     bind(FrontendApplicationContribution).toService(SweepEditHistoryRecorder);

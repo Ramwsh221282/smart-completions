@@ -16,6 +16,7 @@ import {
     ZetaBackendService,
     ZETA_SERVICE_PATH,
 } from '../common/protocol';
+import { CORE_SERVICE_PATH, CoreBackendService } from '../common/core/core-protocol';
 import { EmbeddingIndexClientImpl } from './embedding/index-client';
 
 /**
@@ -71,6 +72,16 @@ export function bindSweepGraphProxy(bind: interfaces.Bind): void {
         .toDynamicValue(ctx => {
             const provider = ctx.container.get<ServiceConnectionProvider>(RemoteConnectionProvider);
             return provider.createProxy<SweepGraphService>(SWEEP_GRAPH_SERVICE_PATH);
+        })
+        .inSingletonScope();
+}
+
+/** Core proxy bridges the frontend document sync to the backend Rust core service. */
+export function bindCoreProxy(bind: interfaces.Bind): void {
+    bind(CoreBackendService)
+        .toDynamicValue(ctx => {
+            const provider = ctx.container.get<ServiceConnectionProvider>(RemoteConnectionProvider);
+            return provider.createProxy<CoreBackendService>(CORE_SERVICE_PATH);
         })
         .inSingletonScope();
 }

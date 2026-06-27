@@ -39,6 +39,21 @@ export const SMART_COMPLETIONS_PREFERENCE_SCHEMA: PreferenceSchema = {
             default: 'parallel',
             description: 'FIM/NES scheduling policy. parallel keeps both independent; idle-nes runs NES only after the edit debounce.',
         },
+        'smart-completions.core.enabled': {
+            type: 'boolean',
+            default: false,
+            description: 'Enable the experimental Rust core path. Falls back to the TypeScript services on failure.',
+        },
+        'smart-completions.core.binaryPath': {
+            type: 'string',
+            default: '',
+            description: 'Optional absolute path to the smart-completions-core binary. Empty uses the bundled resource.',
+        },
+        'smart-completions.core.socketDir': {
+            type: 'string',
+            default: '',
+            description: 'Optional socket directory. Empty uses a per-workspace temporary directory.',
+        },
         'smart-completions.fim.enabled': {
             type: 'boolean',
             default: true,

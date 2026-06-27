@@ -1,5 +1,6 @@
 import { ContainerModule } from '@theia/core/shared/inversify';
 import { ConnectionHandler, RpcConnectionHandler } from '@theia/core/lib/common/messaging';
+import { BackendApplicationContribution } from '@theia/core/lib/node/backend-application';
 import {
     FimBackendService,
     FIM_SERVICE_PATH,
@@ -12,6 +13,9 @@ import {
     SWEEP_GRAPH_SERVICE_PATH,
     ZETA_SERVICE_PATH,
 } from '../common/protocol';
+import { CORE_SERVICE_PATH, CoreBackendService } from '../common/core/core-protocol';
+import { CoreBackendServiceImpl } from './core/core-backend-service';
+import { CoreBackendContribution } from './core/core-backend-contribution';
 import { EmbeddingIndexServiceImpl } from './services/embedding-index-service';
 import { FimBackendServiceImpl } from './services/fim-backend-service';
 import { NesBackendServiceImpl } from './services/nes-backend-service';
@@ -84,8 +88,18 @@ export default new ContainerModule(bind => {
     bind(EmbeddingIndexServiceImpl).toSelf().inSingletonScope();
     bind(EmbeddingIndexService).toService(EmbeddingIndexServiceImpl);
 
+    // Experimental Rust core: spawned/supervised on the backend, exposed over RPC.
+    // Disabled by default; the TypeScript services remain the fallback.
+    bind(CoreBackendServiceImpl).toSelf().inSingletonScope();
+    bind(CoreBackendService).toService(CoreBackendServiceImpl);
+    bind(BackendApplicationContribution).to(CoreBackendContribution).inSingletonScope();
+
     bind(ConnectionHandler)
         .toDynamicValue(ctx => new RpcConnectionHandler(FIM_SERVICE_PATH, () => ctx.container.get(FimBackendServiceImpl)))
+        .inSingletonScope();
+
+    bind(ConnectionHandler)
+        .toDynamicValue(ctx => new RpcConnectionHandler(CORE_SERVICE_PATH, () => ctx.container.get(CoreBackendServiceImpl)))
         .inSingletonScope();
 
     bind(ConnectionHandler)
