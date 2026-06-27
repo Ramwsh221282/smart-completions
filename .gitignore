@@ -1,6 +1,7 @@
 node_modules/
 lib/
 lib-test/
+resources/bin/
 *.tsbuildinfo
 *.vsix
 graphify-out/

@@ -14,8 +14,19 @@ const DEFAULT_FIM_URL: &str = "http://127.0.0.1:8020/completion";
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if wants_version() {
+        println!("smart-completions-core {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     init_tracing();
     run(socket_path_from_args()).await
+}
+
+fn wants_version() -> bool {
+    env::args()
+        .skip(1)
+        .any(|arg| arg == "--version" || arg == "-V")
 }
 
 async fn run(socket_path: Option<String>) -> Result<()> {
