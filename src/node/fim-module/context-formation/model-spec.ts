@@ -1,3 +1,4 @@
+import { AIXCODER_TOKENS } from '../../../common/aixcoder/aixcoder-tokens';
 import { FimModelId, FimTemplateId, GenerationMode } from '../../../common/model-types';
 
 export interface FimTokenSet {
@@ -12,7 +13,7 @@ export interface FimModelSpec {
     templateId: FimTemplateId;
     llamaModel: string;
     supportsRepoContext: boolean;
-    repoFormat?: 'file-sep' | 'comment';
+    repoFormat?: 'file-sep' | 'comment' | 'aixcoder';
     tokens: FimTokenSet;
     repoNameToken?: string;
     fileToken?: string;
@@ -67,6 +68,14 @@ const SPECS: Record<FimModelId, FimModelSpec> = {
         supportsRepoContext: false,
         tokens: DEEPSEEK_TOKENS,
     },
+    'aixcoder-7b-v2': {
+        modelId: 'aixcoder-7b-v2',
+        templateId: 'aixcoder',
+        llamaModel: 'aixcoder-7b-v2',
+        supportsRepoContext: true,
+        repoFormat: 'aixcoder',
+        tokens: AIXCODER_TOKENS,
+    },
     'granite-4.1-8b': {
         modelId: 'granite-4.1-8b',
         templateId: 'granite',
@@ -97,7 +106,17 @@ export function fimStopTokens(spec: FimModelSpec): string[] {
     return Array.from(new Set(stops));
 }
 
-export function fimMaxTokens(generationMode: GenerationMode): number {
+export function fimMaxTokens(spec: FimModelSpec, generationMode: GenerationMode): number {
+    if (spec.templateId === 'aixcoder') {
+        switch (generationMode) {
+            case 'line':
+                return 64;
+            case 'block':
+                return 512;
+            default:
+                return 256;
+        }
+    }
     switch (generationMode) {
         case 'line':
             return 48;

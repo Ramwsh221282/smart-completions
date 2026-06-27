@@ -5,11 +5,12 @@ export type FimModelId =
     | 'qwen2.5-coder'
     | 'deepseek-coder'
     | 'omnicoder'
+    | 'aixcoder-7b-v2'
     | 'granite-4.1-8b'
     | 'granite-4.1-3b';
 
 /** Шаблон промпта FIM (общий для родственных моделей). */
-export type FimTemplateId = 'qwen' | 'deepseek' | 'granite';
+export type FimTemplateId = 'qwen' | 'deepseek' | 'granite' | 'aixcoder';
 
 /** Активная NES-модель (по одной за раз). */
 export type NesModelId = 'sweep-default' | 'sweep-small' | 'zeta' | 'zeta-2.1';
@@ -44,10 +45,15 @@ export const FIM_MODEL_TEMPLATE: Record<FimModelId, FimTemplateId> = {
     'qwen2.5-coder': 'qwen',
     omnicoder: 'qwen',
     'deepseek-coder': 'deepseek',
+    'aixcoder-7b-v2': 'aixcoder',
     'granite-4.1-8b': 'granite',
     'granite-4.1-3b': 'granite',
 };
 
 export function isGraniteFimModel(modelId: FimModelId): boolean {
     return FIM_MODEL_TEMPLATE[modelId] === 'granite';
+}
+
+export function isAixcoderFimModel(modelId: FimModelId): boolean {
+    return FIM_MODEL_TEMPLATE[modelId] === 'aixcoder';
 }

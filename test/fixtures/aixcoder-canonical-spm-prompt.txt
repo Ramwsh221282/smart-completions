@@ -1,0 +1,3 @@
+\u2581<AIX-SPAN-PRE>\u2581<AIX-SPAN-POST>;\u2581<AIX-SPAN-MIDDLE># the file path is: src/current.ts
+# the code file is written by TypeScript
+const value = 

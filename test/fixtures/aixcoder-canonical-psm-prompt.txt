@@ -1,0 +1,9 @@
+\u2581<AIX-SPAN-PRE># the file path is: src/worse.ts
+# the code file is written by TypeScript
+export const worse = 1;
+# the file path is: src/best.ts
+# the code file is written by TypeScript
+export const best = 2;
+# the file path is: src/current.ts
+# the code file is written by TypeScript
+const value = \u2581<AIX-SPAN-POST>;\u2581<AIX-SPAN-MIDDLE>

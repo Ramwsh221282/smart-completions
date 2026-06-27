@@ -12,7 +12,7 @@ const ENABLED = process.env.SC_FIM_IT === '1';
 const BASE_URL = process.env.SC_FIM_URL ?? 'http://localhost:8080/v1';
 const MODEL_ID = (process.env.SC_FIM_MODEL ?? 'qwen2.5-coder') as FimModelId;
 
-const FIM_TOKENS = /<\|(fim_prefix|fim_suffix|fim_middle|fim_pad|repo_name|file_sep|filename|reponame|endoftext|end_of_text)\|>/;
+const FIM_TOKENS = /<\|(fim_prefix|fim_suffix|fim_middle|fim_pad|repo_name|file_sep|filename|reponame|endoftext|end_of_text)\|>|<｜fim▁(begin|hole|end)｜>|<\/s>|▁<AIX-SPAN-(PRE|POST|MIDDLE)>/;
 const CODE_FENCE = /```/;
 
 const client = new LlamaFimClient();

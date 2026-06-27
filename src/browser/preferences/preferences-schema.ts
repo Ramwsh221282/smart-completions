@@ -1,9 +1,10 @@
 import { PreferenceSchema } from '@theia/core/lib/common/preferences/preference-schema';
 import { PreferenceService } from '@theia/core/lib/common/preferences/preference-service';
+import { AIXCODER_CONTEXT_TOKENS } from '../../common/aixcoder/aixcoder-tokens';
 import { EmbeddingConfig } from '../../common/embedding-types';
 import { FimConfig } from '../../common/fim-types';
 import { DEFAULT_DIAGNOSTICS_GATE_CONFIG, NesConfig } from '../../common/nes-types';
-import { EmbedModelId, FimModelId, GenerationMode, NesModelId, VectorDbId, isGraniteFimModel } from '../../common/model-types';
+import { EmbedModelId, FimModelId, GenerationMode, NesModelId, VectorDbId, isAixcoderFimModel, isGraniteFimModel } from '../../common/model-types';
 import { SweepProfileId, getSweepProfile, sweepProfileIdForModel, sweepRequestModelName } from '../../common/sweep/profiles';
 import { DEFAULT_SWEEP_FUZZY_CONFIG, DEFAULT_SWEEP_GRAPH_CONFIG, DEFAULT_SWEEP_RERANK_CONFIG } from '../../common/sweep/types';
 import type { ZetaConfig } from '../../common/zeta21/types';
@@ -34,7 +35,7 @@ export const SMART_COMPLETIONS_PREFERENCE_SCHEMA: PreferenceSchema = {
         },
         'smart-completions.fim.modelId': {
             type: 'string',
-            enum: ['qwen2.5-coder', 'deepseek-coder', 'omnicoder', 'granite-4.1-8b', 'granite-4.1-3b'],
+            enum: ['qwen2.5-coder', 'deepseek-coder', 'omnicoder', 'aixcoder-7b-v2', 'granite-4.1-8b', 'granite-4.1-3b'],
             default: 'qwen2.5-coder',
             description: 'Active FIM model served by llama.cpp.',
         },
@@ -349,6 +350,7 @@ const FIM_CONTEXT_MAX: Record<FimModelId, number> = {
     'qwen2.5-coder': 32768,
     'deepseek-coder': 16384,
     omnicoder: 32768,
+    'aixcoder-7b-v2': AIXCODER_CONTEXT_TOKENS,
     'granite-4.1-8b': 128000,
     'granite-4.1-3b': 128000,
 };
@@ -367,7 +369,7 @@ export function readFimConfig(preferences: PreferenceService): FimConfig {
         generationMode: preferences.get<GenerationMode>('smart-completions.fim.generationMode', 'multiline'),
         temperature: preferences.get<number>('smart-completions.fim.temperature', 0.05),
         ragEnabled: preferences.get<boolean>('smart-completions.fim.ragEnabled', true),
-        fimEmbedderId: isGraniteFimModel(modelId) ? 'qwen3-0.6b' : configuredFimEmbedderId,
+        fimEmbedderId: forceQwen3FimEmbedder(modelId) ? 'qwen3-0.6b' : configuredFimEmbedderId,
         embedding,
         retrieval: {
             rerank: {
@@ -395,6 +397,10 @@ export function readFimConfig(preferences: PreferenceService): FimConfig {
             diagnostics: preferences.get<boolean>('smart-completions.fim.contextSources.diagnostics', false),
         },
     };
+}
+
+function forceQwen3FimEmbedder(modelId: FimModelId): boolean {
+    return isGraniteFimModel(modelId) || isAixcoderFimModel(modelId);
 }
 
 /** Собрать NesConfig из PreferenceService. */

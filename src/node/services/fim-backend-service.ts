@@ -1,11 +1,13 @@
-import * as path from 'path';
-import { fileURLToPath } from 'url';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { injectable, inject } from '@theia/core/shared/inversify';
 import { CancellationToken, Disposable } from '@theia/core/lib/common';
+import { isAixcoderFimModel } from '../../common/model-types';
 import { buildFimRetrievalQuery, extractFimSignals } from '../../common/fim/fim-retrieval-queries';
 import { FimBackendService } from '../../common/protocol';
 import { FimConfig, FimRequest, FimResponse } from '../../common/fim-types';
 import { dedupeContextFiles } from '../../common/sweep/dedup-context';
+import { verifyAixcoderSpecialTokens } from '../aixcoder/aixcoder-token-healthcheck';
 import { buildFimPrompt } from '../fim-module/context-formation/builder';
 import { FimEmbeddingIndexService } from '../fim-module/embedding/fim-embedding-index-service';
 import { getFimModelSpec } from '../fim-module/context-formation/model-spec';
@@ -72,6 +74,7 @@ export class FimBackendServiceImpl implements FimBackendService {
             contextSize: Math.max(1024, config.contextSize),
             temperature: Math.min(0.1, Math.max(0, config.temperature)),
         };
+        await this.ensureAixcoderTokens();
         if (workspaceRoots) {
             this.workspaceRoots = workspaceRoots.map(uriToFsPath);
         }
@@ -181,6 +184,16 @@ export class FimBackendServiceImpl implements FimBackendService {
     private workspaceRootForUri(uri: string): string | undefined {
         const fsPath = uriToFsPath(uri);
         return this.fimIndex.workspaceRoots.find(root => fsPath === root || fsPath.startsWith(root + path.sep));
+    }
+
+    private async ensureAixcoderTokens(): Promise<void> {
+        if (!isAixcoderFimModel(this.config.modelId)) {
+            return;
+        }
+        const tokensOk = await verifyAixcoderSpecialTokens(this.config.llamaUrl);
+        if (!tokensOk) {
+            throw new Error('aiXcoder GGUF does not preserve AIX-SPAN special tokens');
+        }
     }
 }
 
