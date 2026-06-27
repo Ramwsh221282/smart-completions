@@ -7,7 +7,8 @@ use core_dispatch::CancellationRegistry;
 use core_documents::{CoreDocumentStore, DocumentContentChange, InitialDocumentSnapshot};
 use core_ipc::{
     ClientFrame, ServerFrame, WireCompletionRequest, WireDiagnostic, WireDiagnosticSeverity,
-    WireDocumentChange, WireInitialDocument, WireOutlineItem, WireRelatedFileHint, WireTextChange,
+    WireDocumentChange, WireInitialDocument, WireOutlineItem, WireRelatedFileHint, WireSignals,
+    WireTextChange,
 };
 use core_llama::GenerationClient;
 use core_models::{FimModelModule, FimModuleKind, FimRenderInput, GenerationMode};
@@ -207,6 +208,7 @@ impl CoreFrameHandler {
         let Some((workspace_root, current_file_path)) = self.workspace_context(request) else {
             return Vec::new();
         };
+        let signal_terms = signal_terms(request.signals.as_ref());
 
         let mut loaded = Vec::with_capacity(request.related_file_hints.len());
         for (index, hint) in request.related_file_hints.iter().enumerate() {
@@ -215,6 +217,7 @@ impl CoreFrameHandler {
             }
             if let Some(neighbor) = load_related_hint_neighbor(&workspace_root, hint) {
                 loaded.push(LoadedRelatedHint {
+                    signal_score: signal_score(&neighbor, &signal_terms),
                     neighbor,
                     score_hint: hint.score_hint,
                     has_range: hint.range.is_some(),
@@ -240,6 +243,7 @@ impl CoreFrameHandler {
 }
 
 struct LoadedRelatedHint {
+    signal_score: usize,
     neighbor: Neighbor,
     score_hint: f32,
     has_range: bool,
@@ -262,8 +266,9 @@ fn load_related_hint_neighbor(
 fn rank_related_hints(mut loaded: Vec<LoadedRelatedHint>) -> Vec<Neighbor> {
     loaded.sort_by(|left, right| {
         right
-            .score_hint
-            .total_cmp(&left.score_hint)
+            .signal_score
+            .cmp(&left.signal_score)
+            .then_with(|| right.score_hint.total_cmp(&left.score_hint))
             .then_with(|| right.has_range.cmp(&left.has_range))
             .then_with(|| left.source_index.cmp(&right.source_index))
     });
@@ -336,6 +341,69 @@ fn clip_related_prefix(text: &str) -> String {
         return text.to_owned();
     }
     text[..MAX_CHARS].to_owned()
+}
+
+// Signal terms give the core a lightweight relevance pass before a real
+// retrieval backend consumes the same envelope metadata more deeply.
+fn signal_terms(signals: Option<&WireSignals>) -> Vec<String> {
+    let Some(signals) = signals else {
+        return Vec::new();
+    };
+
+    let mut terms = Vec::with_capacity(16);
+    push_signal_value(&mut terms, signals.symbol_at_cursor.as_deref());
+    push_signal_list(&mut terms, &signals.renamed_symbols);
+    push_signal_list(&mut terms, &signals.imported_symbols);
+    push_signal_list(&mut terms, &signals.declared_types);
+    push_signal_list(&mut terms, &signals.test_names);
+    push_signal_list(&mut terms, &signals.diagnostic_symbols);
+    push_signal_list(&mut terms, &signals.fuzzy_symbols);
+    push_signal_list(&mut terms, &signals.retrieval_signal_hints);
+    terms.sort_unstable();
+    terms.dedup();
+    terms
+}
+
+fn push_signal_list(terms: &mut Vec<String>, values: &[String]) {
+    for value in values {
+        push_signal_value(terms, Some(value.as_str()));
+    }
+}
+
+fn push_signal_value(terms: &mut Vec<String>, value: Option<&str>) {
+    let Some(value) = value else {
+        return;
+    };
+    for token in split_signal_tokens(value) {
+        if token.len() >= 3 {
+            terms.push(token.to_owned());
+        }
+    }
+}
+
+fn split_signal_tokens(value: &str) -> impl Iterator<Item = &str> {
+    value
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .filter(|token| !token.is_empty())
+}
+
+fn signal_score(neighbor: &Neighbor, terms: &[String]) -> usize {
+    if terms.is_empty() {
+        return 0;
+    }
+
+    let file_path = neighbor.file_path.to_ascii_lowercase();
+    let text = neighbor.text.to_ascii_lowercase();
+    let mut score = 0;
+    for term in terms {
+        if file_path.contains(term) {
+            score += 4;
+        }
+        if text.contains(term) {
+            score += 1;
+        }
+    }
+    score
 }
 
 // Diagnostics become a pseudo-file so compiler friction reaches the model via
