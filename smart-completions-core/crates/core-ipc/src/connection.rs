@@ -58,7 +58,7 @@ pub async fn write_client_frame<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    let payload = encode_client_frame(frame)?;
+    let payload = encode_client_frame(frame);
     write_frame(writer, &payload).await?;
     Ok(())
 }
@@ -89,7 +89,7 @@ pub async fn write_server_frame<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    let payload = encode_server_frame(frame)?;
+    let payload = encode_server_frame(frame);
     write_frame(writer, &payload).await?;
     Ok(())
 }

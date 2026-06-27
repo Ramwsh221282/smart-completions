@@ -36,6 +36,7 @@
     "better-sqlite3": "^12.11.1",
     "chromadb": "3.4.3",
     "diff": "9.0.0",
+    "flatbuffers": "24.12.23",
     "fuzzysort": "^3.1.0",
     "ignore": "7.0.5",
     "lru-cache": "^11.0.0",

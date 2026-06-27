@@ -1,13 +1,12 @@
-// Length-prefixed JSON transport to the Rust core. The wire shape mirrors the
-// core's serde frames (snake_case fields, adjacently tagged { kind, data },
-// PascalCase enums). FlatBuffers via planus is the target encoding; this JSON
-// framing is the transitional smoke path.
+// Length-prefixed FlatBuffers transport to the Rust core. The schema already
+// covers a richer envelope than the active FIM pilot path, so the TS side
+// packs the current subset and leaves future-only fields at null/default.
 //
 // NOTE: Monaco ranges are UTF-16 and 1-based; the core treats columns as
 // 0-based. Full UTF-16<->byte reconciliation is pending; for now we shift to
 // 0-based, which is exact for ASCII content.
 
-import * as net from 'net';
+import * as net from 'node:net';
 import {
     CoreCompletionRequest,
     CoreDocumentChange,
@@ -15,66 +14,18 @@ import {
     CoreTextChange,
 } from '../../common/core/core-protocol';
 import { decodeFrames, interpretServerFrame } from './core-frames';
+import {
+    type ClientFrame,
+    type WireCompletionRequest,
+    type WireDocumentChange,
+    type WireFileMode,
+    type WireInitialDocument,
+    type WireMode,
+    type WireTextChange,
+    encodeClientFramePayload,
+} from './core-flatbuffers';
 
 const REQUEST_TIMEOUT_MS = 15_000;
-
-type WireFileMode = 'Code' | 'Prose';
-type WireMode = 'Fim' | 'Nes';
-
-interface WireRange {
-    start_line: number;
-    start_col: number;
-    end_line: number;
-    end_col: number;
-}
-
-interface WireTextChange {
-    range: WireRange;
-    range_length: number;
-    inserted_text: string;
-}
-
-interface WireInitialDocument {
-    uri: string;
-    version: number;
-    language_id: string;
-    file_path: string | null;
-    file_mode: WireFileMode;
-    text: string;
-}
-
-interface WireDocumentChange {
-    uri: string;
-    from_version: number;
-    to_version: number;
-    changes: WireTextChange[];
-}
-
-interface WirePosition {
-    line: number;
-    column: number;
-    offset: number;
-}
-
-interface WireCompletionRequest {
-    request_id: number;
-    mode: WireMode;
-    model_id: string;
-    uri: string;
-    version: number;
-    file_mode: WireFileMode;
-    cursor: WirePosition;
-    config_version: number;
-}
-
-/** A frame sent from Node to the core, matching the serde wire enum. */
-export type ClientFrame =
-    | { kind: 'InitialDocumentSnapshot'; data: WireInitialDocument }
-    | { kind: 'OpenBufferSnapshot'; data: WireInitialDocument }
-    | { kind: 'DocumentChange'; data: WireDocumentChange }
-    | { kind: 'CompletionRequest'; data: WireCompletionRequest }
-    | { kind: 'Cancel'; data: { request_id: number } }
-    | { kind: 'Shutdown'; data: { reason: string } };
 
 type CoreFileModeInput = 'code' | 'prose';
 type CoreModeInput = 'fim' | 'nes';
@@ -129,9 +80,9 @@ export function toWireCompletionRequest(request: CoreCompletionRequest): WireCom
     };
 }
 
-/** Encodes a client frame as a length-prefixed JSON buffer. */
+/** Encodes a client frame as a length-prefixed FlatBuffers buffer. */
 export function encodeFrame(frame: ClientFrame): Buffer {
-    const payload = Buffer.from(JSON.stringify(frame), 'utf8');
+    const payload = Buffer.from(encodeClientFramePayload(frame));
     const header = Buffer.allocUnsafe(4);
     header.writeUInt32LE(payload.length, 0);
     return Buffer.concat([header, payload]);

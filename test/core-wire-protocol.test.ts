@@ -7,6 +7,7 @@ import {
     toWireDocumentChange,
     toWireInitialDocument,
 } from '../src/node/core/core-ipc-client';
+import { decodeClientFramePayload } from '../src/node/core/core-flatbuffers';
 
 test('initial document maps to snake_case wire fields', () => {
     const wire = toWireInitialDocument({
@@ -79,5 +80,5 @@ test('encodeFrame prefixes a little-endian length and round-trips', () => {
     const payload = buffer.subarray(4);
 
     assert.equal(length, payload.length);
-    assert.deepEqual(JSON.parse(payload.toString('utf8')), frame);
+    assert.deepEqual(decodeClientFramePayload(payload), frame);
 });

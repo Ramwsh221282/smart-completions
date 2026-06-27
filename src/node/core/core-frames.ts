@@ -1,16 +1,18 @@
-// Pure decoders for the length-prefixed JSON server frames the core sends back.
-// Kept free of socket/Theia deps so the framing and interpretation can be
-// unit-tested directly.
+// Pure decoders for the length-prefixed FlatBuffers server frames the core
+// sends back. Kept free of socket/Theia deps so the framing stays easy to unit
+// test in isolation from the live transport.
+
+import { decodeServerFramePayload } from './core-flatbuffers';
 
 /** Complete frames extracted from a buffer plus the unconsumed remainder. */
 export interface DecodedFrames {
-    frames: unknown[];
+    frames: Uint8Array[];
     rest: Buffer;
 }
 
 /** Extracts every complete length-prefixed frame, leaving partial bytes behind. */
 export function decodeFrames(buffer: Buffer): DecodedFrames {
-    const frames: unknown[] = [];
+    const frames: Uint8Array[] = [];
     let offset = 0;
 
     while (buffer.length - offset >= 4) {
@@ -18,8 +20,7 @@ export function decodeFrames(buffer: Buffer): DecodedFrames {
         if (buffer.length - offset - 4 < length) {
             break;
         }
-        const payload = buffer.subarray(offset + 4, offset + 4 + length);
-        frames.push(JSON.parse(payload.toString('utf8')));
+        frames.push(buffer.subarray(offset + 4, offset + 4 + length));
         offset += 4 + length;
     }
 
@@ -37,44 +38,33 @@ export interface InterpretedFrame {
     message?: string;
 }
 
-/** Interprets an adjacently tagged server frame, or returns undefined if unknown. */
+/** Interprets one FlatBuffers server frame, or returns undefined if unknown. */
 export function interpretServerFrame(frame: unknown): InterpretedFrame | undefined {
-    if (!isRecord(frame)) {
+    if (!(frame instanceof Uint8Array)) {
         return undefined;
     }
-    const { kind, data } = frame;
-    if (typeof kind !== 'string' || !isRecord(data)) {
+    try {
+        const decoded = decodeServerFramePayload(frame);
+        if (!decoded) {
+            return undefined;
+        }
+        return interpretDecodedFrame(decoded);
+    } catch {
         return undefined;
     }
-    if (typeof data.request_id !== 'number') {
-        return undefined;
-    }
-    return interpretByKind(kind, data.request_id, data);
 }
 
-function interpretByKind(
-    kind: string,
-    requestId: number,
-    data: Record<string, unknown>,
-): InterpretedFrame | undefined {
-    switch (kind) {
+function interpretDecodedFrame(frame: InterpretedFrame): InterpretedFrame | undefined {
+    switch (frame.kind) {
         case 'Token':
-            return { kind, requestId, text: asString(data.text) };
+            return { kind: frame.kind, requestId: frame.requestId, text: frame.text ?? '' };
         case 'Done':
-            return { kind, requestId };
+            return { kind: frame.kind, requestId: frame.requestId };
         case 'Error':
-            return { kind, requestId, message: asString(data.message) };
+            return { kind: frame.kind, requestId: frame.requestId, message: frame.message ?? '' };
         case 'Edit':
-            return { kind, requestId };
+            return { kind: frame.kind, requestId: frame.requestId };
         default:
             return undefined;
     }
-}
-
-function asString(value: unknown): string {
-    return typeof value === 'string' ? value : '';
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === 'object' && value !== null;
 }

@@ -2,8 +2,10 @@
 
 use bytes::BytesMut;
 use core_ipc::{
+    decode_client_frame, decode_server_frame, encode_client_frame, encode_server_frame,
     read_client_frame, read_server_frame, serve_connection, write_client_frame, ClientFrame,
-    ConnectionEnd, FrameHandler, HandlerOutcome, ServerFrame, WireCompletionRequest, WireShutdown,
+    ConnectionEnd, FrameHandler, HandlerOutcome, ServerFrame, WireCompletionRequest,
+    WireInitialDocument, WireShutdown,
 };
 use core_types::{CompletionMode, FileMode, Position};
 
@@ -44,6 +46,36 @@ fn shutdown() -> ClientFrame {
     ClientFrame::Shutdown(WireShutdown {
         reason: "test".to_string(),
     })
+}
+
+#[test]
+fn open_buffer_snapshot_round_trips_through_flatbuffers() {
+    let frame = ClientFrame::OpenBufferSnapshot(WireInitialDocument {
+        uri: "untitled:1".to_string(),
+        version: 2,
+        language_id: "markdown".to_string(),
+        file_path: None,
+        file_mode: FileMode::Prose,
+        text: "hello".to_string(),
+    });
+
+    let encoded = encode_client_frame(&frame);
+    let decoded = decode_client_frame(&encoded).unwrap();
+
+    assert_eq!(decoded, frame);
+}
+
+#[test]
+fn error_frame_round_trips_through_flatbuffers() {
+    let frame = ServerFrame::Error {
+        request_id: 9,
+        message: "boom".to_string(),
+    };
+
+    let encoded = encode_server_frame(&frame);
+    let decoded = decode_server_frame(&encoded).unwrap();
+
+    assert_eq!(decoded, frame);
 }
 
 #[tokio::test]

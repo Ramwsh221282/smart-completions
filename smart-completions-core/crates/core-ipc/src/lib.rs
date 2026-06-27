@@ -1,8 +1,8 @@
 //! IPC transport for the Node <-> Rust core boundary.
 //!
-//! Layers: length-prefixed framing, a serde wire protocol (transitional JSON,
-//! FlatBuffers via planus is the target), and a connection serving loop with a
-//! Unix-socket listener. Windows named pipes land on the cross-platform phase.
+//! Layers: length-prefixed framing, a FlatBuffers wire protocol via planus, and
+//! a connection serving loop with a Unix-socket listener. Windows named pipes
+//! land on the cross-platform phase.
 
 pub mod connection;
 pub mod framing;
@@ -10,9 +10,6 @@ pub mod protocol;
 pub mod server;
 
 /// FlatBuffers types generated from `schema/*.fbs` by planus at build time.
-///
-/// This is the target wire encoding; the active transport still uses the
-/// transitional JSON protocol until both sides switch over.
 #[rustfmt::skip]
 #[allow(
     unsafe_code,
