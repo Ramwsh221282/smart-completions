@@ -7,7 +7,8 @@ import type { FimConfig, FimRequest } from '../../common/fim-types';
 import type { FileMode } from '../../common/mode-types';
 import { FimBackendService } from '../../common/protocol';
 import { CoreBackendService } from '../../common/core/core-protocol';
-import { FimContextCollector } from './data-gathering-layer/fim-context-collector';
+import { buildCoreCompletionRequest } from '../../common/core/core-request-mapping';
+import { FimContextCollector, type CollectedFimContext } from './data-gathering-layer/fim-context-collector';
 import { FimCompletionCache, type FimCacheKeyInput } from './fim-completion-cache';
 import { readFimConfig } from '../preferences/preferences-schema';
 import { fileModeForLanguage } from '../shared/file-mode';
@@ -93,18 +94,18 @@ export class FimInlineProvider implements FrontendApplicationContribution, monac
         token: monaco.CancellationToken,
     ): Promise<monaco.languages.InlineCompletions | undefined> {
         const version = model.getVersionId();
-        if (this.coreEnabled) {
-            const fromCore = await this.tryCoreCompletion(model, position, prepared, version, token);
-            if (fromCore !== undefined) {
-                return fromCore;
-            }
-        }
         const source = new CancellationTokenSource();
         const listener = token.onCancellationRequested(() => source.cancel());
         try {
             const fimContext = await this.collectContext(model, position);
             if (token.isCancellationRequested || model.getVersionId() !== version) {
                 return undefined;
+            }
+            if (this.coreEnabled) {
+                const fromCore = await this.tryCoreCompletion(model, position, prepared, version, token, fimContext);
+                if (fromCore !== undefined) {
+                    return fromCore;
+                }
             }
             const response = await this.fim.complete({
                 requestId: createRequestId(),
@@ -124,14 +125,16 @@ export class FimInlineProvider implements FrontendApplicationContribution, monac
     }
 
     private collectContext(model: monaco.editor.ITextModel, position: monaco.Position) {
-        if (!shouldCollectFimContext(this.config)) {
-            return Promise.resolve({ recentEdits: [], relatedFiles: [] });
+        if (!shouldCollectFimContext(this.config, this.coreEnabled)) {
+            return Promise.resolve(emptyCollectedFimContext());
         }
         return this.collector.collect({
             model,
             position,
             collectRecentEdits: this.config.contextSources.recentEdits,
             collectRelatedFiles: this.config.contextSources.repoContext,
+            collectDiagnostics: this.config.contextSources.diagnostics,
+            collectCoreEnvelope: this.coreEnabled,
         });
     }
 
@@ -146,9 +149,10 @@ export class FimInlineProvider implements FrontendApplicationContribution, monac
         prepared: PreparedFimRequest,
         version: number,
         token: monaco.CancellationToken,
+        fimContext: CollectedFimContext,
     ): Promise<monaco.languages.InlineCompletions | undefined> {
         try {
-            const result = await this.core.requestCompletion({
+            const result = await this.core.requestCompletion(buildCoreCompletionRequest({
                 requestId: this.nextRequestId(),
                 mode: 'fim',
                 modelId: this.config.modelId,
@@ -162,7 +166,14 @@ export class FimInlineProvider implements FrontendApplicationContribution, monac
                     offset: model.getOffsetAt(position),
                 },
                 configVersion: 0,
-            });
+                context: {
+                    recentEdits: fimContext.recentEdits,
+                    diagnostics: fimContext.diagnostics,
+                    outline: fimContext.outline,
+                    relatedFileHints: fimContext.relatedFileHints,
+                    signals: fimContext.signals,
+                },
+            }));
             if (!result.accepted || !result.text) {
                 return undefined;
             }
@@ -234,8 +245,19 @@ function toInlineCompletions(range: monaco.Range, insertText: string): monaco.la
     };
 }
 
-function shouldCollectFimContext(config: FimConfig): boolean {
-    return config.contextSources.recentEdits || config.contextSources.repoContext;
+function emptyCollectedFimContext(): CollectedFimContext {
+    return {
+        recentEdits: [],
+        relatedFiles: [],
+        diagnostics: [],
+        outline: [],
+        relatedFileHints: [],
+        signals: undefined,
+    };
+}
+
+function shouldCollectFimContext(config: FimConfig, coreEnabled: boolean): boolean {
+    return coreEnabled || config.contextSources.recentEdits || config.contextSources.repoContext;
 }
 
 /** Ограничивает автотриггер FIM допустимыми символами-разделителями, чтобы не срабатывать внутри слова. */
