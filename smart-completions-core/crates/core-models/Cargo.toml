@@ -1,0 +1,13 @@
+[package]
+name = "core-models"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+core-types = { path = "../core-types" }
+
+[lints]
+workspace = true

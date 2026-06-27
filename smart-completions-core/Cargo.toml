@@ -1,0 +1,62 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/core-types",
+  "crates/core-documents",
+  "crates/core-ipc",
+  "crates/core-dispatch",
+  "crates/core-retrieval",
+  "crates/core-models",
+  "crates/smart-completions-core-bin",
+]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.88"
+license = "UNLICENSED"
+publish = false
+
+# Curated dependency set for the current migration phase. Heavy native/network
+# crates from implementation.md (lancedb, tantivy, rusqlite, tree-sitter,
+# tokenizers, reqwest, interprocess, planus, ...) are added in their own phases
+# so each step stays buildable and testable.
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "sync", "time", "signal"] }
+tokio-util = "0.7"
+bytes = "1"
+smallvec = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Lint groups use distinct negative priorities so specific lints (priority 0)
+# always override them; this also satisfies clippy::lint_groups_priority.
+[workspace.lints.rust]
+future-incompatible = { level = "warn", priority = -2 }
+nonstandard_style = { level = "deny", priority = -1 }
+missing_docs = "warn"
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -4 }
+perf = { level = "deny", priority = -3 }
+correctness = { level = "deny", priority = -2 }
+pedantic = { level = "warn", priority = -1 }
+redundant_clone = "deny"
+
+[profile.release]
+strip = true
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+debug = false
+incremental = false
+
+[profile.release-thin]
+inherits = "release"
+lto = "thin"
+codegen-units = 4

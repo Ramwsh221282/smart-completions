@@ -1,0 +1,21 @@
+avoid-breaking-exported-api = false
+msrv = "1.88"
+
+# Domain acronyms and product names allowed in doc comments so `doc_markdown`
+# stays green under `-D warnings`. `..` keeps clippy's default ident list.
+doc-valid-idents = [
+  "CRLF",
+  "RRF",
+  "BM25",
+  "FIM",
+  "NES",
+  "IPC",
+  "DTO",
+  "SSE",
+  "LanceDB",
+  "Tantivy",
+  "SQLite",
+  "FlatBuffers",
+  "CoreDocumentStore",
+  "..",
+]
