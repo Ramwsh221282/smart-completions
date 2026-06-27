@@ -1,0 +1,8 @@
+        return user ? user.displayName : 'unknown';
+    }
+
+    listEmails(): string[] {
+        return this.repository.all().map(user => user.email);
+    }
+}
+

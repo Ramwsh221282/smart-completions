@@ -32,7 +32,7 @@ export interface BuiltSweepPrompt {
  * нужен потому что training-format требует строго определённого порядка блоков и стоп-токенов.
  */
 export function buildSweepPrompt(input: BuildSweepPromptInput): BuiltSweepPrompt {
-    const profile = input.profile ?? getSweepProfile(input.modelId === 'sweep-small' ? '1.5b' : 'v2-7b');
+    const profile = resolveSweepProfile(input);
     const maxTokens = maxTokensForSweepVolume(input.editVolume, profile.maxOutputTokens);
     const deduped = dedupeContextFiles({
         currentFilePath: input.filePath,
@@ -45,18 +45,57 @@ export function buildSweepPrompt(input: BuildSweepPromptInput): BuiltSweepPrompt
     const sections = buildSweepSections(trimInput, trimmed, range);
     const prompt = sections.join('\n');
     const llamaModel = input.requestModelName ?? sweepRequestModelName(profile.id, '');
-    const estimatedPromptTokens = trimmed.consumedTokens + SWEEP_TEMPLATE_OVERHEAD_TOKENS;
-    let promptTokens = estimatedPromptTokens;
+    const promptTokens = resolvePromptTokens(input, prompt, trimmed.consumedTokens);
+    const tokenMode = input.tokenCounter?.mode ?? 'char-fallback';
+    logSweepPromptBuilt(input, profile, prompt, range, sections, maxTokens, trimmed, deduped, llamaModel, promptTokens, tokenMode);
+    return {
+        prompt,
+        stop: ['<|file_sep|>', '<|endoftext|>'],
+        maxTokens,
+        model: llamaModel,
+        format: 'sweep',
+        overflow: trimmed.overflow,
+        prefill: trimmed.prefill,
+        promptTokens,
+        tokenMode,
+        contextProfile: profile.id,
+    };
+}
+
+/** Резолвит профиль модели из поля profile или по modelId; нужен чтобы не дублировать условие в caller. */
+function resolveSweepProfile(input: BuildSweepPromptInput) {
+    return input.profile ?? getSweepProfile(input.modelId === 'sweep-small' ? '1.5b' : 'v2-7b');
+}
+
+/** Считает promptTokens: в development — точный подсчёт через tokenizer; в production — оценка по trimmer. */
+function resolvePromptTokens(input: BuildSweepPromptInput, prompt: string, consumedTokens: number): number {
+    const estimated = consumedTokens + SWEEP_TEMPLATE_OVERHEAD_TOKENS;
     if (process.env.NODE_ENV === 'development' && input.tokenCounter) {
         const exact = input.tokenCounter.count(prompt);
         LOG.debug('Sweep promptTokens estimate delta', {
-            estimate: estimatedPromptTokens,
+            estimate: estimated,
             exact,
-            markupActual: exact - trimmed.consumedTokens,
+            markupActual: exact - consumedTokens,
         });
-        promptTokens = exact;
+        return exact;
     }
-    const tokenMode = input.tokenCounter?.mode ?? 'char-fallback';
+    return estimated;
+}
+
+/** Логирует статистику сборки и полный промпт (prompt text только в development). */
+function logSweepPromptBuilt(
+    input: BuildSweepPromptInput,
+    profile: ReturnType<typeof resolveSweepProfile>,
+    prompt: string,
+    range: string,
+    sections: string[],
+    maxTokens: number,
+    trimmed: TrimmedSweepContext,
+    deduped: ReturnType<typeof dedupeContextFiles>,
+    llamaModel: string,
+    promptTokens: number,
+    tokenMode: string,
+): void {
     LOG.info('Sweep prompt built', {
         modelId: input.modelId,
         llamaModel,
@@ -78,18 +117,6 @@ export function buildSweepPrompt(input: BuildSweepPromptInput): BuiltSweepPrompt
         tokenMode,
     });
     LOG.prompt('training-format', prompt, { modelId: input.modelId, contextProfile: profile.id, fileMode: input.fileMode ?? 'code', range });
-    return {
-        prompt,
-        stop: ['<|file_sep|>', '<|endoftext|>'],
-        maxTokens,
-        model: llamaModel,
-        format: 'sweep',
-        overflow: trimmed.overflow,
-        prefill: trimmed.prefill,
-        promptTokens,
-        tokenMode,
-        contextProfile: profile.id,
-    };
 }
 
 /**

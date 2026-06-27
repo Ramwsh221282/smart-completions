@@ -15,7 +15,7 @@ test('buildZetaPrompt matches canonical SPM training-format snapshot', () => {
         cursorOffset: 'code that\nneeds to'.length,
         regions: [{ markerIndex: 1, startOffset: 0, endOffset: 'code that\nneeds to\nbe rewritten'.length }],
         relatedFiles: [{ filePath: 'related/file.py', content: 'related file content' }],
-        editHistoryBlock: '<filename>edit_history\n--- a/some_file.py\n+++ b/some_file.py\n-old\n+new',
+        editHistoryBlock: 'edit_history\n--- a/some_file.py\n+++ b/some_file.py\n-old\n+new',
     });
 
     assert.equal(built.prompt, CANONICAL_PROMPT);

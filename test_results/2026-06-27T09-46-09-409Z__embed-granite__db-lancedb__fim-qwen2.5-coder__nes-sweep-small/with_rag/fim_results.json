@@ -1,0 +1,9 @@
+{
+  "modelId": "qwen2.5-coder",
+  "neighbors": [
+    "pricing.ts",
+    "pricing.ts",
+    "pricing.ts"
+  ],
+  "completion": "total * factor;"
+}

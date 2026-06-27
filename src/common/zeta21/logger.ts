@@ -12,7 +12,7 @@ export class ZetaLogger {
     private readonly scope: string;
 
     /** Создаёт логгер для одного компонента zeta21, чтобы его сообщения шли с предсказуемым scope. */
-    constructor(scope = 'zeta') {
+    constructor(scope = 'zeta21') {
         this.scope = scope;
     }
 

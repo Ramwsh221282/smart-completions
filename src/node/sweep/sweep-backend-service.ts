@@ -15,7 +15,7 @@ import { EmbeddingIndexServiceImpl } from '../services/embedding-index-service';
 import { LlamaSweepClient } from './model-call-layer/llama-sweep-client';
 import { parseSweepCompletion } from './model-call-layer/sweep-response-parser';
 import { SweepSyntaxGate } from './model-call-layer/syntax-gate';
-import { buildSweepPrompt } from './prompt-creating-layer/sweep-prompt-builder';
+import { buildSweepPrompt, BuiltSweepPrompt } from './prompt-creating-layer/sweep-prompt-builder';
 import { SweepRetrievalOrchestrator } from './retrieval/sweep-retrieval-orchestrator';
 import { QwenTokenCounter } from './token-budget/token-counter';
 
@@ -76,81 +76,26 @@ export class SweepBackendService {
      * возвращает пустой ответ если история правок пуста, запрос отменён или промпт переполнен.
      */
     async predict(request: SweepRequest, token?: CancellationToken): Promise<SweepResponse> {
-        const startedAt = Date.now();
-        if (request.recentEdits.length === 0 || token?.isCancellationRequested) {
-            LOG.info('Sweep prediction skipped', { reason: request.recentEdits.length === 0 ? 'no recent edits' : 'cancelled' });
+        const skipReason = predictSkipReason(request, token);
+        if (skipReason !== undefined) {
+            LOG.info('Sweep prediction skipped', { reason: skipReason });
             return this.emptyResponse();
         }
+        const startedAt = Date.now();
         const abort = bridgeCancellation(token);
         try {
             const windowText = normalizeCrlf(request.windowText);
             const neighbors = this.config.ragEnabled ? await this.retrieveNeighbors(request, windowText, abort.signal) : [];
             await this.tokenCounter.ensureReady();
-            const prompt = buildSweepPrompt({
-                modelId: this.config.modelId,
-                filePath: this.filePathForUri(request.uri),
-                fileMode: request.fileMode,
-                windowText,
-                broadFileText: normalizeCrlf(request.broadFileText ?? request.windowText),
-                broadFileStartLine: request.broadFileStartLine,
-                windowStartLine: request.windowStart.line,
-                originalWindowText: request.originalWindowText,
-                cursorOffset: request.cursorOffset,
-                recentEdits: this.recentEditsForPrompt(request.recentEdits),
-                diagnostics: request.diagnostics,
-                neighbors,
-                relatedFiles: request.relatedFiles,
-                outline: request.outline,
-                editVolume: this.config.editVolume,
-                injectInlineDiagnostics: this.config.injectInlineDiagnostics,
-                contextSize: this.config.contextSize,
-                profile: this.config.profile,
-                requestModelName: this.config.requestModelName,
-                tokenCounter: this.tokenCounter,
-            });
+            const prompt = this.buildPrompt(request, windowText, neighbors);
             if (prompt.overflow) {
                 LOG.warn('Sweep prediction skipped because prompt overflowed', { requestId: request.requestId });
                 return this.emptyResponse();
             }
-            const rawText = await this.client.complete({
-                baseUrl: this.config.llamaUrl,
-                model: prompt.model,
-                prompt: prompt.prompt,
-                stop: prompt.stop,
-                maxTokens: prompt.maxTokens,
-                temperature: this.config.profile.temperature,
-                cachePrompt: true,
-                seed: 0,
-                signal: abort.signal,
-            });
-            const parsed = parseSweepCompletion({
-                rawText,
-                oldWindowText: windowText,
-                windowStart: request.windowStart,
-                stopTokens: prompt.stop,
-                prefill: prompt.prefill,
-                cursorOffset: request.cursorOffset,
-            });
-            if (parsed.edits.length === 0) {
-                LOG.info('Sweep prediction completed without visible edit', { requestId: request.requestId, durationMs: Date.now() - startedAt, status: parsed.status, rejectReason: parsed.rejectReason });
-                return this.emptyResponse();
-            }
-            if (request.fileMode === 'code' && parsed.updatedWindow) {
-                const delta = await this.syntaxGate.errorDelta(windowText, parsed.updatedWindow, request.languageId);
-                if (delta !== undefined && delta > 0) {
-                    LOG.info('Sweep edit rejected by syntax gate', { requestId: request.requestId, delta });
-                    return this.emptyResponse();
-                }
-            }
-            LOG.info('Sweep prediction completed', { requestId: request.requestId, durationMs: Date.now() - startedAt, edits: parsed.edits.length });
-            return this.successResponse(parsed.edits, parsed.primaryRange, parsed.jumpTo);
+            const rawText = await this.completeWithModel(prompt, abort.signal);
+            return await this.parseAndRespond(request, windowText, rawText, prompt, startedAt);
         } catch (error) {
-            if (abort.signal.aborted || isAbortError(error)) {
-                LOG.info('Sweep prediction cancelled', { requestId: request.requestId });
-                return this.emptyResponse();
-            }
-            LOG.error('Sweep prediction failed', { requestId: request.requestId, error: error instanceof Error ? error.message : String(error) });
-            return this.emptyResponse();
+            return this.handlePredictionError(request, error, abort.signal);
         } finally {
             abort.dispose();
         }
@@ -220,6 +165,88 @@ export class SweepBackendService {
         return out;
     }
 
+    /** Собирает полный buildSweepPrompt-вход из конфига и нормализованных данных запроса. */
+    private buildPrompt(request: SweepRequest, windowText: string, neighbors: Neighbor[]): BuiltSweepPrompt {
+        return buildSweepPrompt({
+            modelId: this.config.modelId,
+            filePath: this.filePathForUri(request.uri),
+            fileMode: request.fileMode,
+            windowText,
+            broadFileText: normalizeCrlf(request.broadFileText ?? request.windowText),
+            broadFileStartLine: request.broadFileStartLine,
+            windowStartLine: request.windowStart.line,
+            originalWindowText: request.originalWindowText,
+            cursorOffset: request.cursorOffset,
+            recentEdits: this.recentEditsForPrompt(request.recentEdits),
+            diagnostics: request.diagnostics,
+            neighbors,
+            relatedFiles: request.relatedFiles,
+            outline: request.outline,
+            editVolume: this.config.editVolume,
+            injectInlineDiagnostics: this.config.injectInlineDiagnostics,
+            contextSize: this.config.contextSize,
+            profile: this.config.profile,
+            requestModelName: this.config.requestModelName,
+            tokenCounter: this.tokenCounter,
+        });
+    }
+
+    /** Вызывает llama.cpp с готовым prompt и параметрами из конфига. */
+    private async completeWithModel(prompt: BuiltSweepPrompt, signal?: AbortSignal): Promise<string> {
+        return this.client.complete({
+            baseUrl: this.config.llamaUrl,
+            model: prompt.model,
+            prompt: prompt.prompt,
+            stop: prompt.stop,
+            maxTokens: prompt.maxTokens,
+            temperature: this.config.profile.temperature,
+            cachePrompt: true,
+            seed: 0,
+            signal,
+        });
+    }
+
+    /** Парсит raw ответ модели, проверяет reject-gates и syntax gate, формирует итоговый SweepResponse. */
+    private async parseAndRespond(
+        request: SweepRequest,
+        windowText: string,
+        rawText: string,
+        prompt: BuiltSweepPrompt,
+        startedAt: number,
+    ): Promise<SweepResponse> {
+        const parsed = parseSweepCompletion({
+            rawText,
+            oldWindowText: windowText,
+            windowStart: request.windowStart,
+            stopTokens: prompt.stop,
+            prefill: prompt.prefill,
+            cursorOffset: request.cursorOffset,
+        });
+        if (parsed.edits.length === 0) {
+            LOG.info('Sweep prediction completed without visible edit', { requestId: request.requestId, durationMs: Date.now() - startedAt, status: parsed.status, rejectReason: parsed.rejectReason });
+            return this.emptyResponse();
+        }
+        if (request.fileMode === 'code' && parsed.updatedWindow) {
+            const delta = await this.syntaxGate.errorDelta(windowText, parsed.updatedWindow, request.languageId);
+            if (delta !== undefined && delta > 0) {
+                LOG.info('Sweep edit rejected by syntax gate', { requestId: request.requestId, delta });
+                return this.emptyResponse();
+            }
+        }
+        LOG.info('Sweep prediction completed', { requestId: request.requestId, durationMs: Date.now() - startedAt, edits: parsed.edits.length });
+        return this.successResponse(parsed.edits, parsed.primaryRange, parsed.jumpTo);
+    }
+
+    /** Обрабатывает ошибки predict: отменённые запросы возвращают empty без лога warn. */
+    private handlePredictionError(request: SweepRequest, error: unknown, signal: AbortSignal): SweepResponse {
+        if (signal.aborted || isAbortError(error)) {
+            LOG.info('Sweep prediction cancelled', { requestId: request.requestId });
+            return this.emptyResponse();
+        }
+        LOG.error('Sweep prediction failed', { requestId: request.requestId, error: error instanceof Error ? error.message : String(error) });
+        return this.emptyResponse();
+    }
+
     /** Создаёт пустой SweepResponse без telemetry wire-format для skip/reject/error путей. */
     private emptyResponse(): SweepResponse {
         return {
@@ -237,6 +264,17 @@ export class SweepBackendService {
             modelId: this.config.modelId,
         };
     }
+}
+
+/** Проверяет стоп-условия до начала async работы; возвращает причину пропуска или undefined. */
+function predictSkipReason(request: SweepRequest, token?: CancellationToken): string | undefined {
+    if (request.recentEdits.length === 0) {
+        return 'no recent edits';
+    }
+    if (token?.isCancellationRequested) {
+        return 'cancelled';
+    }
+    return undefined;
 }
 
 /**

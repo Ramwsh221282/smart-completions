@@ -1,6 +1,5 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseNesCompletion } from '../src/node/nes-module/model-call/response-parser';
 import { parseSweepCompletion } from '../src/node/sweep/model-call-layer/sweep-response-parser';
 
 test('Sweep parser returns line replacement edit for changed window', () => {
@@ -44,12 +43,4 @@ test('Sweep parser rejects whitespace-only changes', () => {
     assert.equal(parsed.rejectReason, 'whitespace-only');
 });
 
-test('NES parser strips zeta close marker', () => {
-    const parsed = parseNesCompletion({
-        rawText: 'a\nchanged\n>>>>>>> UPDATED',
-        oldWindowText: 'a\nold',
-        windowStart: { line: 0, character: 0 },
-        stopTokens: ['>>>>>>> UPDATED'],
-    });
-    assert.equal(parsed.edits[0].newText, 'changed');
-});
+

@@ -11,6 +11,13 @@ import { buildFimRerankQuery, clipRerankDocument, FimRerankerClient, looksBroken
 const RERANK_WARMUP_TIMEOUT_MS = 15000;
 const LOG = new FimLogger('node:retrieval-orchestrator');
 
+/** Вычисляет finalTopN и poolN из конфига реранкера и запрошенного topN. */
+function buildRetrievalPlan(input: OrchestratorInput, config: FimRetrievalConfig): { finalTopN: number; poolN: number } {
+    const finalTopN = Math.max(1, Math.min(config.rerank.finalTopN, input.topN));
+    const poolN = Math.max(finalTopN, config.rerank.candidatePoolN);
+    return { finalTopN, poolN };
+}
+
 export interface OrchestratorInput {
     query: string;
     fileMode: FileMode;
@@ -38,9 +45,16 @@ export class FimRetrievalOrchestrator {
         }
     }
 
+    /** Выполняет гибридный retrieval: сливает каналы через RRF и опционально реранкирует; fail-open при сбое реранкера. */
     async retrieve(input: OrchestratorInput, config: FimRetrievalConfig): Promise<Neighbor[]> {
-        const finalTopN = Math.max(1, Math.min(config.rerank.finalTopN, input.topN));
-        const poolN = Math.max(finalTopN, config.rerank.candidatePoolN);
+        const { finalTopN, poolN } = buildRetrievalPlan(input, config);
+        const lists = await this.collectChannelResults(input, config, poolN);
+        const merged = mergeNeighborChannels(lists, poolN);
+        return this.selectFinalNeighbors(merged, input, config, finalTopN);
+    }
+
+    /** Запускает все подходящие каналы параллельно (last-hop sequential) и собирает списки соседей. */
+    private async collectChannelResults(input: OrchestratorInput, config: FimRetrievalConfig, poolN: number): Promise<Neighbor[][]> {
         const channelInput: RetrievalChannelInput = {
             query: input.query,
             signals: input.signals,
@@ -58,7 +72,11 @@ export class FimRetrievalOrchestrator {
             }
             lists.push(await channel.retrieve(channelInput, poolN));
         }
-        const merged = mergeNeighborChannels(lists, poolN);
+        return lists;
+    }
+
+    /** Выбирает финальный набор соседей: реранк если включён, иначе срез merged-порядка. Fail-open при сбое реранкера. */
+    private async selectFinalNeighbors(merged: Neighbor[], input: OrchestratorInput, config: FimRetrievalConfig, finalTopN: number): Promise<Neighbor[]> {
         if (!config.rerank.enabled || this.rerankerBroken) {
             return merged.slice(0, finalTopN);
         }

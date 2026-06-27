@@ -1,0 +1,5 @@
+{
+  "modelId": "qwen2.5-coder",
+  "neighbors": [],
+  "completion": "total * factor;"
+}

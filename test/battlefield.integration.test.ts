@@ -16,8 +16,6 @@ import { extractCodeSymbolsHeuristic, formatOutline } from '../src/common/sweep/
 import { LlamaSweepClient } from '../src/node/sweep/model-call-layer/llama-sweep-client';
 import { parseSweepCompletion } from '../src/node/sweep/model-call-layer/sweep-response-parser';
 import { buildSweepPrompt } from '../src/node/sweep/prompt-creating-layer/sweep-prompt-builder';
-import { buildNesPrompt } from '../src/node/nes-module/context-formation/builder';
-import { parseNesCompletion } from '../src/node/nes-module/model-call/response-parser';
 import { RecentEdit } from '../src/common/edit-history-types';
 
 // Боевой прогон одной связки моделей: embedding-индекс → retrieval → FIM (no-RAG/with-RAG)
@@ -48,6 +46,8 @@ const LEGACY_NES_SECTIONS = ['context/rules', 'context/retrieval', 'context/diag
 function isSweepModel(modelId: NesModelId): modelId is 'sweep-default' | 'sweep-small' {
     return modelId === 'sweep-default' || modelId === 'sweep-small';
 }
+
+// Zeta 2.1 имеет независимый pipeline через ZetaBackendService; battlefield тест покрывает только Sweep.
 
 function getFreePort(): Promise<number> {
     return new Promise((resolve, reject) => {
@@ -240,8 +240,8 @@ test(
                 }
             }
 
-            // ===== NES block =====
-            if (NES_URL) {
+            // ===== NES block (Sweep-only; zeta-2.1 has its own battlefield test) =====
+            if (NES_URL && isSweepModel(NES_MODEL)) {
                 const windowText = await fs.promises.readFile(path.join(REPO, 'user-service.ts'), 'utf8');
                 const cursorOffset = windowText.indexOf('user.fullName') + 'user.fullName'.length;
                 const recentEdits: RecentEdit[] = [{
@@ -282,58 +282,40 @@ test(
                         record(report, 'NES with_rag: diff-query found cross-file dependency', found,
                             neighbors.map(n => n.filePath).join(','));
                     }
-                    const prompt = isSweepModel(NES_MODEL)
-                        ? buildSweepPrompt({
-                            modelId: NES_MODEL,
-                            filePath: 'user-service.ts',
-                            windowText,
-                            windowStartLine: windowStart.line,
-                            originalWindowText: windowText,
-                            cursorOffset,
-                            recentEdits,
-                            diagnostics,
-                            neighbors,
-                            relatedFiles,
-                            outline,
-                            editVolume: 'medium',
-                            injectInlineDiagnostics: NES_INJECT_DIAG,
-                            contextSize: NES_CTX,
-                        })
-                        : buildNesPrompt({
-                            modelId: NES_MODEL,
-                            filePath: 'user-service.ts',
-                            windowText,
-                            windowStartLine: windowStart.line,
-                            originalWindowText: windowText,
-                            cursorOffset,
-                            recentEdits,
-                            diagnostics,
-                            neighbors,
-                            relatedFiles,
-                            outline,
-                            editVolume: 'medium',
-                            injectInlineDiagnostics: NES_INJECT_DIAG,
-                            contextSize: NES_CTX,
-                        });
+                    const prompt = buildSweepPrompt({
+                        modelId: NES_MODEL,
+                        filePath: 'user-service.ts',
+                        windowText,
+                        windowStartLine: windowStart.line,
+                        originalWindowText: windowText,
+                        cursorOffset,
+                        recentEdits,
+                        diagnostics,
+                        neighbors,
+                        relatedFiles,
+                        outline,
+                        editVolume: 'medium',
+                        injectInlineDiagnostics: NES_INJECT_DIAG,
+                        contextSize: NES_CTX,
+                    });
                     record(report, `NES ${mode}: prompt not overflow`, !prompt.overflow);
-                    if (NES_MODEL === 'sweep-default' || NES_MODEL === 'sweep-small') {
-                        const triad = prompt.prompt.split('<|file_sep|>').filter(Boolean).slice(-3);
-                        const triadOk =
-                            triad.length === 3 &&
-                            triad[0].startsWith('original/') &&
-                            triad[1].startsWith('current/') &&
-                            triad[2].startsWith('updated/');
-                        record(report, `NES ${mode}: original/current/updated triad is last`, triadOk,
-                            triad.map(t => t.split('\n')[0]).join(' | '));
-                        const legacy = LEGACY_NES_SECTIONS.find(s => prompt.prompt.includes(s));
-                        record(report, `NES ${mode}: no legacy sweep sections`, !legacy, legacy);
+                    const triad = prompt.prompt.split('<|file_sep|>').filter(Boolean).slice(-3);
+                    const triadOk =
+                        triad.length === 3 &&
+                        triad[0].startsWith('original/') &&
+                        triad[1].startsWith('current/') &&
+                        triad[2].startsWith('updated/');
+                    record(report, `NES ${mode}: original/current/updated triad is last`, triadOk,
+                        triad.map(t => t.split('\n')[0]).join(' | '));
+                    const legacy = LEGACY_NES_SECTIONS.find(s => prompt.prompt.includes(s));
+                    record(report, `NES ${mode}: no legacy sweep sections`, !legacy, legacy);
 
-                        const outlineIdx = prompt.prompt.indexOf('<|file_sep|>outline/user-service.ts');
-                        const triadIdx = prompt.prompt.indexOf('<|file_sep|>original/user-service.ts');
-                        record(report, `NES ${mode}: outline pseudo-file present`, outlineIdx >= 0);
-                        record(report, `NES ${mode}: related file block present`, prompt.prompt.includes('<|file_sep|>types.ts\nexport interface User'));
-                        record(report, `NES ${mode}: zone B sits before the triad`, outlineIdx >= 0 && triadIdx >= 0 && outlineIdx < triadIdx);
-                    }
+                    const outlineIdx = prompt.prompt.indexOf('<|file_sep|>outline/user-service.ts');
+                    const triadIdx = prompt.prompt.indexOf('<|file_sep|>original/user-service.ts');
+                    record(report, `NES ${mode}: outline pseudo-file present`, outlineIdx >= 0);
+                    record(report, `NES ${mode}: related file block present`, prompt.prompt.includes('<|file_sep|>types.ts\nexport interface User'));
+                    record(report, `NES ${mode}: zone B sits before the triad`, outlineIdx >= 0 && triadIdx >= 0 && outlineIdx < triadIdx);
+
                     const raw = await nesClient.complete({
                         baseUrl: NES_URL,
                         model: prompt.model,
@@ -342,9 +324,7 @@ test(
                         maxTokens: prompt.maxTokens,
                         temperature: 0.05,
                     });
-                    const parsed = isSweepModel(NES_MODEL)
-                        ? parseSweepCompletion({ rawText: raw, oldWindowText: windowText, windowStart, stopTokens: prompt.stop, prefill: (prompt as { prefill?: string }).prefill })
-                        : parseNesCompletion({ rawText: raw, oldWindowText: windowText, windowStart, stopTokens: prompt.stop });
+                    const parsed = parseSweepCompletion({ rawText: raw, oldWindowText: windowText, windowStart, stopTokens: prompt.stop, prefill: prompt.prefill });
                     await fs.promises.writeFile(path.join(bundleDir, mode, 'prompts', 'nes.txt'), prompt.prompt);
                     await fs.promises.writeFile(path.join(bundleDir, mode, 'raw_responses', 'nes.txt'), raw);
                     await fs.promises.writeFile(
@@ -368,6 +348,8 @@ test(
                     report.quality[`nes_${mode}_edit`] = combined;
                     report.quality[`nes_${mode}_edits_count`] = parsed.edits.length;
                 }
+            } else if (NES_URL) {
+                console.log(`[battlefield] NES model ${NES_MODEL} is not a Sweep model; NES Sweep block skipped`);
             }
 
             await svc.dispose();

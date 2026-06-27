@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatRecentEdits } from '../src/node/nes-module/context-formation/builder';
 import { buildSweepPrompt, unifiedDiffToOriginalUpdated } from '../src/node/sweep/prompt-creating-layer/sweep-prompt-builder';
+import { nesRetrievalQuery } from '../src/common/sweep/retrieval-queries';
 import { RecentEdit } from '../src/common/edit-history-types';
 import { reconstructOriginalWindow } from '../src/common/sweep/original-window-reconstruction';
 import type { TokenCounter } from '../src/node/sweep/token-budget/token-counter';
@@ -320,10 +320,19 @@ test('sweep outline renders as pseudo-file in zone B', () => {
 });
 
 
-test('formatRecentEdits strips file headers from stored diffs', () => {
-    const formatted = formatRecentEdits(recentEdits);
-    assert.ok(!formatted.includes('--- a.ts'));
-    assert.ok(formatted.includes('@@ -1,1 +1,1 @@'));
+test('nesRetrievalQuery uses recent edit diffs, newest at the tail', () => {
+    const edits: RecentEdit[] = [
+        { uri: 'file:///r/old.ts', unifiedDiff: 'OLD_DIFF_RENAME_foo', timestamp: 1 },
+        { uri: 'file:///r/new.ts', unifiedDiff: 'NEW_DIFF_RENAME_bar', timestamp: 2 },
+    ];
+    const query = nesRetrievalQuery(edits, 1000);
+    assert.ok(query.includes('OLD_DIFF_RENAME_foo'));
+    assert.ok(query.includes('NEW_DIFF_RENAME_bar'));
+    assert.ok(query.endsWith('NEW_DIFF_RENAME_bar'), 'newest edit ends the query tail');
+
+    const tail = nesRetrievalQuery(edits, 10);
+    assert.equal(tail.length, 10);
+    assert.ok(tail.endsWith('bar'));
 });
 
 test('unifiedDiffToOriginalUpdated splits removed and added lines', () => {

@@ -10,9 +10,18 @@ const LOG_METHODS = new Set(['debug', 'info', 'warn', 'error', 'prompt']);
 const CONSOLE_METHODS = new Set(['debug', 'info', 'warn', 'error', 'log', 'trace', 'time', 'timeEnd']);
 const LOGGER_CLASS_NAMES = new Set(['SweepLogger', 'ZetaLogger', 'FimLogger']);
 
+// Скомпилированные logger-модули вырезаются целиком после AST-strip, чтобы они не попадали в release artifact.
+const COMPILED_LOGGER_MODULES = [
+  'common/sweep/logger.js',
+  'common/zeta21/logger.js',
+  'common/fim/logger.js',
+];
+
 for (const filePath of walkJsFiles(LIB_DIR)) {
   stripFile(filePath);
 }
+
+removeCompiledLoggerModules();
 
 function stripFile(filePath) {
   const sourceText = fs.readFileSync(filePath, 'utf8');
@@ -35,7 +44,7 @@ function stripReleaseLogsTransformer(context) {
     }
 
     if (ts.isBlock(node)) {
-      const statements = visitStatementList(node.statements, visitor, context);
+      const statements = visitStatementList(node.statements, visitor);
       return ts.factory.updateBlock(node, statements);
     }
 
@@ -49,7 +58,7 @@ function stripReleaseLogsTransformer(context) {
   return node => ts.visitNode(node, visitor);
 }
 
-function visitStatementList(statements, visitor, context) {
+function visitStatementList(statements, visitor) {
   const kept = [];
   for (let i = 0; i < statements.length; i++) {
     const visited = ts.visitNode(statements[i], visitor);
@@ -146,6 +155,13 @@ function isProcessEnvNodeEnv(expression) {
 
 function isDevelopmentLiteral(expression) {
   return ts.isStringLiteral(expression) && expression.text === 'development';
+}
+
+function removeCompiledLoggerModules() {
+  for (let i = 0; i < COMPILED_LOGGER_MODULES.length; i++) {
+    const absolute = path.join(LIB_DIR, COMPILED_LOGGER_MODULES[i]);
+    fs.rmSync(absolute, { force: true });
+  }
 }
 
 function* walkJsFiles(dir) {

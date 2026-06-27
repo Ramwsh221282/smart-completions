@@ -10,6 +10,8 @@ const FORBIDDEN_PATTERNS = [
   { label: 'console call', re: /\bconsole\.(?:debug|info|warn|error|log|trace|time|timeEnd)\b/ },
   { label: 'LOG call', re: /\bLOG\.(?:debug|info|warn|error|prompt)\b/ },
   { label: 'logger instance', re: /new\s+(?:[A-Za-z0-9_$]+\.)?(?:SweepLogger|ZetaLogger|FimLogger)\b/ },
+  { label: 'logger class definition', re: /\bclass\s+(?:SweepLogger|ZetaLogger|FimLogger)\b/ },
+  { label: 'logger module reference', re: /(?:common|\.\.?)[\\/](?:sweep|zeta21|fim)[\\/]logger\b/ },
   { label: 'prompt text log marker', re: /prompt text:/ },
   { label: 'raw response log marker', re: /raw response text/ },
 ];

@@ -116,7 +116,7 @@ test(
                     expectFile: 'chromadb-store.ts',
                 },
                 {
-                    query: 'function parseNesCompletion diffWindows oldWindowText windowStart cleanResponse stopTokens primaryRange',
+                    query: 'function parseSweepCompletion diffWindows oldWindowText windowStart cleanSweepResponse stopTokens primaryRange',
                     expectFile: 'response-parser.ts',
                 },
                 {

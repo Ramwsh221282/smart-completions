@@ -46,7 +46,7 @@ function buildPrefixBlocks(input: BuildZetaPromptInput): string[] {
         blocks.push(`${ZETA_TOKENS.filename}${related.filePath}\n${related.content}`);
     }
     if (input.editHistoryBlock) {
-        blocks.push(input.editHistoryBlock);
+        blocks.push(`${ZETA_TOKENS.filename}${input.editHistoryBlock}`);
     }
     blocks.push(buildTargetBlock(input));
     return blocks;
