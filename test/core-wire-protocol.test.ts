@@ -91,6 +91,11 @@ test('completion request maps the full envelope schema fields', () => {
             end: { line: 3, character: 4 },
         },
         recentEditUris: ['file:///a.ts', 'file:///b.ts'],
+        recentEdits: [
+            { uri: 'file:///a.ts', unifiedDiff: 'diff-a', timestamp: 1 },
+            { uri: 'file:///b.ts', unifiedDiff: 'diff-b', timestamp: 2 },
+        ],
+        originalWindowText: 'const value = 1;',
         diagnostics: [
             {
                 range: {
@@ -153,6 +158,11 @@ test('completion request maps the full envelope schema fields', () => {
             end_col: 4,
         },
         recent_edit_uris: ['file:///a.ts', 'file:///b.ts'],
+        recent_edits: [
+            { uri: 'file:///a.ts', unified_diff: 'diff-a', timestamp: 1 },
+            { uri: 'file:///b.ts', unified_diff: 'diff-b', timestamp: 2 },
+        ],
+        original_window_text: 'const value = 1;',
         diagnostics: [
             {
                 range: { start_line: 1, start_col: 0, end_line: 1, end_col: 3 },

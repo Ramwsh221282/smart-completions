@@ -134,6 +134,17 @@ pub struct WireSignals {
     pub retrieval_signal_hints: Vec<String>,
 }
 
+/// Compact recent edit payload forwarded to the Rust core.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireRecentEdit {
+    /// URI of the edited document.
+    pub uri: String,
+    /// Compact unified diff.
+    pub unified_diff: String,
+    /// Edit timestamp in Unix milliseconds.
+    pub timestamp: u64,
+}
+
 /// A completion request on the wire.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WireCompletionRequest {
@@ -157,6 +168,10 @@ pub struct WireCompletionRequest {
     pub editable_region: Option<Range>,
     /// URIs of recent edits already tracked by the frontend.
     pub recent_edit_uris: Vec<String>,
+    /// Compact recent edits forwarded for original-window reconstruction.
+    pub recent_edits: Vec<WireRecentEdit>,
+    /// Optional original window captured before the latest edit.
+    pub original_window_text: Option<String>,
     /// Diagnostics gathered near the request.
     pub diagnostics: Vec<WireDiagnostic>,
     /// Outline items describing the active file structure.
@@ -634,6 +649,8 @@ fn to_generated_completion_request(request: &WireCompletionRequest) -> sc::Compl
             .editable_region
             .map(|range| Box::new(to_generated_range(range))),
         recent_edit_uris: vec_if_nonempty(request.recent_edit_uris.clone()),
+        recent_edits: vec_if_nonempty(to_generated_recent_edits(&request.recent_edits)),
+        original_window_text: request.original_window_text.clone(),
         diagnostics: vec_if_nonempty(to_generated_diagnostics(&request.diagnostics)),
         outline: vec_if_nonempty(to_generated_outline(&request.outline)),
         related_file_hints: vec_if_nonempty(to_generated_related_file_hints(
@@ -661,6 +678,13 @@ fn from_generated_completion_request(
             .editable_region
             .map(|range| from_generated_range(&range)),
         recent_edit_uris: request.recent_edit_uris.unwrap_or_default(),
+        recent_edits: request
+            .recent_edits
+            .unwrap_or_default()
+            .into_iter()
+            .map(from_generated_recent_edit)
+            .collect::<Result<Vec<_>, _>>()?,
+        original_window_text: request.original_window_text,
         diagnostics: request
             .diagnostics
             .unwrap_or_default()
@@ -693,6 +717,30 @@ fn to_generated_diagnostics(diagnostics: &[WireDiagnostic]) -> Vec<sc::Diagnosti
         out.push(to_generated_diagnostic(diagnostic));
     }
     out
+}
+
+fn to_generated_recent_edits(edits: &[WireRecentEdit]) -> Vec<sc::RecentEdit> {
+    let mut out = Vec::with_capacity(edits.len());
+    for edit in edits {
+        out.push(to_generated_recent_edit(edit));
+    }
+    out
+}
+
+fn to_generated_recent_edit(edit: &WireRecentEdit) -> sc::RecentEdit {
+    sc::RecentEdit {
+        uri: Some(edit.uri.clone()),
+        unified_diff: Some(edit.unified_diff.clone()),
+        timestamp: edit.timestamp,
+    }
+}
+
+fn from_generated_recent_edit(edit: sc::RecentEdit) -> Result<WireRecentEdit, ProtocolError> {
+    Ok(WireRecentEdit {
+        uri: require_value(edit.uri, "recent_edit.uri")?,
+        unified_diff: require_value(edit.unified_diff, "recent_edit.unified_diff")?,
+        timestamp: edit.timestamp,
+    })
 }
 
 fn to_generated_diagnostic(diagnostic: &WireDiagnostic) -> sc::Diagnostic {

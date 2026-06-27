@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "crates/core-types",
   "crates/core-documents",
+  "crates/core-edit-history",
   "crates/core-ipc",
   "crates/core-dispatch",
   "crates/core-retrieval",

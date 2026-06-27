@@ -36,6 +36,14 @@ export interface InterpretedFrame {
     requestId: number;
     text?: string;
     message?: string;
+    newText?: string;
+    range?: {
+        start_line: number;
+        start_col: number;
+        end_line: number;
+        end_col: number;
+    };
+    jump?: { line: number; column: number; offset: number };
 }
 
 /** Interprets one FlatBuffers server frame, or returns undefined if unknown. */
@@ -63,7 +71,13 @@ function interpretDecodedFrame(frame: InterpretedFrame): InterpretedFrame | unde
         case 'Error':
             return { kind: frame.kind, requestId: frame.requestId, message: frame.message ?? '' };
         case 'Edit':
-            return { kind: frame.kind, requestId: frame.requestId };
+            return {
+                kind: frame.kind,
+                requestId: frame.requestId,
+                newText: frame.newText ?? '',
+                range: frame.range,
+                jump: frame.jump,
+            };
         default:
             return undefined;
     }

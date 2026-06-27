@@ -78,6 +78,12 @@ test('buildCoreCompletionRequest carries collected envelope fields and dedupes r
             end: { line: 3, character: 9 },
         },
         recentEditUris: ['file:///a.ts', 'file:///b.ts'],
+        recentEdits: [
+            { uri: 'file:///a.ts', unifiedDiff: 'diff-a', timestamp: 1 },
+            { uri: 'file:///b.ts', unifiedDiff: 'diff-b', timestamp: 2 },
+            { uri: 'file:///a.ts', unifiedDiff: 'diff-c', timestamp: 3 },
+        ],
+        originalWindowText: undefined,
         diagnostics: [
             {
                 range: {

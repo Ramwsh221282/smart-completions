@@ -6,6 +6,7 @@ import { FimConfig } from '../../common/fim-types';
 import { DEFAULT_DIAGNOSTICS_GATE_CONFIG, NesConfig } from '../../common/nes-types';
 import {
     COMPLETION_SCHEDULING_MODES,
+    CORE_NES_ROUTINGS,
     EmbedModelId,
     FimModelId,
     GenerationMode,
@@ -14,7 +15,9 @@ import {
     isNesModelId,
     isSweepNesModelId,
     normalizeCompletionSchedulingMode,
+    normalizeCoreNesRouting,
     type CompletionSchedulingMode,
+    type CoreNesRouting,
 } from '../../common/model-types';
 import { SweepProfileId, getSweepProfile, sweepProfileIdForModel, sweepRequestModelName } from '../../common/sweep/profiles';
 import { DEFAULT_SWEEP_FUZZY_CONFIG, DEFAULT_SWEEP_GRAPH_CONFIG, DEFAULT_SWEEP_RERANK_CONFIG } from '../../common/sweep/types';
@@ -53,6 +56,12 @@ export const SMART_COMPLETIONS_PREFERENCE_SCHEMA: PreferenceSchema = {
             type: 'string',
             default: '',
             description: 'Optional socket directory. Empty uses a per-workspace temporary directory.',
+        },
+        'smart-completions.core.nesRouting': {
+            type: 'string',
+            enum: [...CORE_NES_ROUTINGS],
+            default: 'fallback',
+            description: 'NES routing when the Rust core is enabled. fallback uses the TypeScript NES backend when the core returns nothing; core-only disables the TypeScript NES path for sweep models.',
         },
         'smart-completions.fim.enabled': {
             type: 'boolean',
@@ -411,6 +420,13 @@ export function readCompletionSchedulingMode(preferences: PreferenceService): Co
     }
     return normalizeCompletionSchedulingMode(
         preferences.get<string | undefined>('smart-completions.coordinationMode', undefined),
+    );
+}
+
+/** Читает режим маршрутизации NES через Rust core; неизвестное значение нормализуется к fallback. */
+export function readCoreNesRouting(preferences: PreferenceService): CoreNesRouting {
+    return normalizeCoreNesRouting(
+        preferences.get<string | undefined>('smart-completions.core.nesRouting', undefined),
     );
 }
 

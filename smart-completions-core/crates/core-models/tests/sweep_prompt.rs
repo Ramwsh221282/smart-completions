@@ -18,38 +18,73 @@ fn neighbor(path: &str, text: &str) -> Neighbor {
     }
 }
 
+fn input<'a>(
+    original_window: &'a str,
+    current_window: &'a str,
+    broad_file_text: &'a str,
+    neighbors: &'a [Neighbor],
+) -> NesRenderInput<'a> {
+    let cursor_byte_offset = current_window
+        .strip_suffix('\n')
+        .map_or(current_window.len(), str::len);
+
+    NesRenderInput {
+        language_id: "typescript",
+        file_path: "a.ts",
+        original_window,
+        current_window,
+        window_start_line: 0,
+        window_line_count: 1,
+        cursor_byte_offset,
+        broad_file_text,
+        neighbors,
+    }
+}
+
 #[test]
-fn renders_only_the_current_window_block_when_no_context() {
+fn renders_the_original_current_updated_triad_when_no_context_exists() {
+    let input = input("let a = 0;\n", "let a = 1;\n", "", &[]);
+
+    let prompt = SweepModule.render_prompt(&input);
+
+    assert_eq!(
+        prompt,
+        "<|file_sep|>original/a.ts:1:1\nlet a = 0;\n\n<|file_sep|>current/a.ts:1:1\nlet a = 1;<|cursor|>\n\n<|file_sep|>updated/a.ts:1:1\n"
+    );
+}
+
+#[test]
+fn renders_broad_file_and_neighbors_before_the_triad() {
+    let neighbors = [neighbor("n.ts", "N")];
+    let input = input("OLD", "WIN", "MOD", &neighbors);
+
+    let prompt = SweepModule.render_prompt(&input);
+
+    assert_eq!(
+        prompt,
+        "<|file_sep|>a.ts\nMOD\n<|file_sep|>n.ts\nN\n<|file_sep|>original/a.ts:1:1\nOLD\n<|file_sep|>current/a.ts:1:1\nWIN<|cursor|>\n<|file_sep|>updated/a.ts:1:1\n"
+    );
+}
+
+#[test]
+fn renders_the_window_range_in_the_triad_headers() {
     let input = NesRenderInput {
         language_id: "typescript",
         file_path: "a.ts",
-        current_window: "let a = 1;\n",
+        original_window: "before",
+        current_window: "after",
+        window_start_line: 9,
+        window_line_count: 3,
+        cursor_byte_offset: 2,
         broad_file_text: "",
         neighbors: &[],
     };
 
     let prompt = SweepModule.render_prompt(&input);
 
-    assert_eq!(prompt, "<|file_sep|>current/a.ts\nlet a = 1;\n");
-}
-
-#[test]
-fn renders_broad_file_and_neighbors_before_current_window() {
-    let neighbors = [neighbor("n.ts", "N")];
-    let input = NesRenderInput {
-        language_id: "typescript",
-        file_path: "a.ts",
-        current_window: "WIN",
-        broad_file_text: "MOD",
-        neighbors: &neighbors,
-    };
-
-    let prompt = SweepModule.render_prompt(&input);
-
-    assert_eq!(
-        prompt,
-        "<|file_sep|>a.ts\nMOD\n<|file_sep|>n.ts\nN\n<|file_sep|>current/a.ts\nWIN"
-    );
+    assert!(prompt.contains("<|file_sep|>original/a.ts:10:12\n"));
+    assert!(prompt.contains("<|file_sep|>current/a.ts:10:12\naf<|cursor|>ter\n"));
+    assert!(prompt.contains("<|file_sep|>updated/a.ts:10:12\n"));
 }
 
 #[test]

@@ -1,8 +1,8 @@
 //! Sweep NES module.
 //!
-//! This phase renders the file-separated block skeleton and parses the raw
-//! response. The full original/current/updated triad with cursor and prefill
-//! arrives once the trimmer, signals and edit-history crates land.
+//! This phase renders the native file-separated triad skeleton and parses the
+//! raw response. It now consumes Rust-built current/original/broad windows,
+//! while prompt trimming, diagnostics blocks and recent-edit diff blocks follow.
 
 use std::fmt::Write;
 
@@ -33,7 +33,7 @@ impl NesModelModule for SweepModule {
 
         append_broad_file(&mut out, input);
         append_neighbors(&mut out, input);
-        append_current_window(&mut out, input);
+        append_triad(&mut out, input);
 
         out
     }
@@ -50,6 +50,7 @@ impl NesModelModule for SweepModule {
 
 fn estimate_prompt_capacity(input: &NesRenderInput<'_>) -> usize {
     input.broad_file_text.len()
+        + input.original_window.len()
         + input.current_window.len()
         + input
             .neighbors
@@ -75,12 +76,32 @@ fn append_neighbors(out: &mut String, input: &NesRenderInput<'_>) {
     }
 }
 
-fn append_current_window(out: &mut String, input: &NesRenderInput<'_>) {
+fn append_triad(out: &mut String, input: &NesRenderInput<'_>) {
+    let range = window_range(input);
+    let current = insert_cursor(input.current_window, input.cursor_byte_offset);
+
+    let _ = writeln!(out, "<|file_sep|>original/{}:{}", input.file_path, range);
+    let _ = writeln!(out, "{}", input.original_window);
     let _ = write!(
         out,
-        "<|file_sep|>current/{}\n{}",
-        input.file_path, input.current_window
+        "<|file_sep|>current/{}:{}\n{}\n<|file_sep|>updated/{}:{}\n",
+        input.file_path, range, current, input.file_path, range,
     );
+}
+
+fn window_range(input: &NesRenderInput<'_>) -> String {
+    let start = input.window_start_line + 1;
+    let end = input.window_start_line + input.window_line_count;
+    format!("{start}:{end}")
+}
+
+fn insert_cursor(current_window: &str, cursor_byte_offset: usize) -> String {
+    let safe_offset = cursor_byte_offset.min(current_window.len());
+    let mut with_cursor = String::with_capacity(current_window.len() + "<|cursor|>".len());
+    with_cursor.push_str(&current_window[..safe_offset]);
+    with_cursor.push_str("<|cursor|>");
+    with_cursor.push_str(&current_window[safe_offset..]);
+    with_cursor
 }
 
 fn clean_response(raw: &str) -> String {

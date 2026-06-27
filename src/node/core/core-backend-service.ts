@@ -62,14 +62,14 @@ export class CoreBackendServiceImpl implements CoreBackendService {
 
     async requestCompletion(request: CoreCompletionRequest): Promise<CoreCompletionResult> {
         if (!this.started) {
-            return { accepted: false, text: '', reason: 'rust core disabled or not running' };
+            return { accepted: false, reason: 'rust core disabled or not running' };
         }
 
         try {
-            const text = await this.ipc.requestCompletion(request);
-            return { accepted: true, text };
+            const result = await this.ipc.requestCompletion(request);
+            return { accepted: true, ...result };
         } catch (error) {
-            return { accepted: false, text: '', reason: String(error) };
+            return { accepted: false, reason: String(error) };
         }
     }
 

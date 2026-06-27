@@ -10,4 +10,7 @@ mod store;
 
 pub use change::{DocumentContentChange, InitialDocumentSnapshot};
 pub use error::{DocumentError, DocumentResult};
-pub use store::CoreDocumentStore;
+pub use store::{
+    BroadDocumentWindow, CoreDocumentStore, CurrentDocumentWindow, OriginalWindowSource,
+    SweepDocumentSnapshot, SweepOriginalContext, SweepWindowLayout,
+};

@@ -6,6 +6,7 @@ import type {
     CoreIndexedRange,
     CoreMode,
     CoreOutlineItem,
+    CoreRecentEdit,
     CoreRelatedFileHint,
     CoreSignals,
 } from './core-protocol';
@@ -14,6 +15,7 @@ import type { RecentEdit } from '../edit-history-types';
 /** Raw frontend context carried into the core envelope builder. */
 export interface CoreRequestContextEnvelope {
     recentEdits: RecentEdit[];
+    originalWindowText?: string;
     diagnostics: CoreDiagnostic[];
     outline: CoreOutlineItem[];
     relatedFileHints: CoreRelatedFileHint[];
@@ -51,6 +53,8 @@ export function buildCoreCompletionRequest(
         cursor: params.cursor,
         editableRegion: params.editableRegion,
         recentEditUris: recentEditUris(params.context.recentEdits),
+        recentEdits: toCoreRecentEdits(params.context.recentEdits),
+        originalWindowText: params.context.originalWindowText,
         diagnostics: params.context.diagnostics,
         outline: params.context.outline,
         relatedFileHints: params.context.relatedFileHints,
@@ -71,4 +75,12 @@ function recentEditUris(recentEdits: readonly RecentEdit[]): string[] {
         }
     }
     return uris;
+}
+
+function toCoreRecentEdits(recentEdits: readonly RecentEdit[]): CoreRecentEdit[] {
+    return recentEdits.map(edit => ({
+        uri: edit.uri,
+        unifiedDiff: edit.unifiedDiff,
+        timestamp: edit.timestamp,
+    }));
 }

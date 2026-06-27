@@ -40,6 +40,12 @@ export interface WirePosition {
     offset: number;
 }
 
+export interface WireRecentEdit {
+    uri: string;
+    unified_diff: string;
+    timestamp: number;
+}
+
 export interface WireDiagnostic {
     range: WireRange;
     severity: number;
@@ -83,6 +89,8 @@ export interface WireCompletionRequest {
     cursor: WirePosition;
     editable_region?: WireRange;
     recent_edit_uris: string[];
+    recent_edits: WireRecentEdit[];
+    original_window_text?: string;
     diagnostics: WireDiagnostic[];
     outline: WireOutlineItem[];
     related_file_hints: WireRelatedFileHint[];
@@ -116,6 +124,9 @@ export interface DecodedServerFrame {
     requestId: number;
     text?: string;
     message?: string;
+    newText?: string;
+    range?: WireRange;
+    jump?: WirePosition;
 }
 
 const CLIENT_FRAME_KIND = {
@@ -289,6 +300,8 @@ function createCompletionRequest(builder: Builder, request: WireCompletionReques
     const cursor = createPosition(builder, request.cursor);
     const editableRegion = request.editable_region ? createRange(builder, request.editable_region) : 0;
     const recentEditUris = createStringVector(builder, request.recent_edit_uris);
+    const recentEdits = createOffsetVector(builder, request.recent_edits.map(item => createRecentEdit(builder, item)));
+    const originalWindowText = createStringOffset(builder, request.original_window_text);
     const diagnostics = createOffsetVector(builder, request.diagnostics.map(item => createDiagnostic(builder, item)));
     const outline = createOffsetVector(builder, request.outline.map(item => createOutlineItem(builder, item)));
     const relatedFileHints = createOffsetVector(
@@ -298,7 +311,7 @@ function createCompletionRequest(builder: Builder, request: WireCompletionReques
     const signals = createSignals(builder, request.signals);
     const configJson = createStringOffset(builder, request.config_json);
 
-    builder.startObject(16);
+    builder.startObject(18);
     builder.addFieldInt64(0, bigintFromNumber(request.request_id), BigInt(0));
     builder.addFieldInt8(1, wireModeValue(request.mode), WIRE_MODE.Fim);
     builder.addFieldOffset(2, modelId, 0);
@@ -309,12 +322,25 @@ function createCompletionRequest(builder: Builder, request: WireCompletionReques
     builder.addFieldOffset(7, cursor, 0);
     builder.addFieldOffset(8, editableRegion, 0);
     builder.addFieldOffset(9, recentEditUris, 0);
-    builder.addFieldOffset(10, diagnostics, 0);
-    builder.addFieldOffset(11, outline, 0);
-    builder.addFieldOffset(12, relatedFileHints, 0);
-    builder.addFieldOffset(13, signals, 0);
-    builder.addFieldInt64(14, bigintFromNumber(request.config_version), BigInt(0));
-    builder.addFieldOffset(15, configJson, 0);
+    builder.addFieldOffset(10, recentEdits, 0);
+    builder.addFieldOffset(11, originalWindowText, 0);
+    builder.addFieldOffset(12, diagnostics, 0);
+    builder.addFieldOffset(13, outline, 0);
+    builder.addFieldOffset(14, relatedFileHints, 0);
+    builder.addFieldOffset(15, signals, 0);
+    builder.addFieldInt64(16, bigintFromNumber(request.config_version), BigInt(0));
+    builder.addFieldOffset(17, configJson, 0);
+    return builder.endObject();
+}
+
+function createRecentEdit(builder: Builder, edit: WireRecentEdit): number {
+    const uri = createStringOffset(builder, edit.uri);
+    const unifiedDiff = createStringOffset(builder, edit.unified_diff);
+
+    builder.startObject(3);
+    builder.addFieldOffset(0, uri, 0);
+    builder.addFieldOffset(1, unifiedDiff, 0);
+    builder.addFieldInt64(2, bigintFromNumber(edit.timestamp), BigInt(0));
     return builder.endObject();
 }
 
@@ -543,12 +569,22 @@ function decodeCompletionRequest(bb: ByteBuffer, table: number): WireCompletionR
         cursor: decodePosition(bb, requireTable(bb, table, 18, 'completion_request.cursor')),
         editable_region: readOptionalRange(bb, table, 20),
         recent_edit_uris: readStringVector(bb, table, 22),
-        diagnostics: readTableVector(bb, table, 24, decodeDiagnostic),
-        outline: readTableVector(bb, table, 26, decodeOutlineItem),
-        related_file_hints: readTableVector(bb, table, 28, decodeRelatedFileHint),
-        signals: readOptionalTable(bb, table, 30, decodeSignals),
-        config_version: readUint64AsNumber(bb, table, 32),
-        config_json: readStringField(bb, table, 34),
+        recent_edits: readTableVector(bb, table, 24, decodeRecentEdit),
+        original_window_text: readStringField(bb, table, 26),
+        diagnostics: readTableVector(bb, table, 28, decodeDiagnostic),
+        outline: readTableVector(bb, table, 30, decodeOutlineItem),
+        related_file_hints: readTableVector(bb, table, 32, decodeRelatedFileHint),
+        signals: readOptionalTable(bb, table, 34, decodeSignals),
+        config_version: readUint64AsNumber(bb, table, 36),
+        config_json: readStringField(bb, table, 38),
+    };
+}
+
+function decodeRecentEdit(bb: ByteBuffer, table: number): WireRecentEdit {
+    return {
+        uri: requireStringField(bb, table, 4, 'recent_edit.uri'),
+        unified_diff: requireStringField(bb, table, 6, 'recent_edit.unified_diff'),
+        timestamp: readUint64AsNumber(bb, table, 8),
     };
 }
 
@@ -627,7 +663,24 @@ function decodeServerFrame(bb: ByteBuffer, table: number): DecodedServerFrame | 
         case FRAME_KIND.Error:
             return { kind: 'Error', requestId, message: readStringField(bb, table, 8) ?? '' };
         case FRAME_KIND.Edit:
-            return { kind: 'Edit', requestId };
+            return {
+                kind: 'Edit',
+                requestId,
+                range: {
+                    start_line: readInt32Field(bb, table, 10, 0),
+                    start_col: readInt32Field(bb, table, 12, 0),
+                    end_line: readInt32Field(bb, table, 14, 0),
+                    end_col: readInt32Field(bb, table, 16, 0),
+                },
+                newText: readStringField(bb, table, 18) ?? '',
+                jump: hasField(bb, table, 20) || hasField(bb, table, 22)
+                    ? {
+                        line: readInt32Field(bb, table, 20, 0),
+                        column: readInt32Field(bb, table, 22, 0),
+                        offset: 0,
+                    }
+                    : undefined,
+            };
         default:
             return undefined;
     }

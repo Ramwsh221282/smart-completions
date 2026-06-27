@@ -4,18 +4,25 @@ use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 use core_dispatch::CancellationRegistry;
-use core_documents::{CoreDocumentStore, DocumentContentChange, InitialDocumentSnapshot};
+use core_documents::{
+    CoreDocumentStore, CurrentDocumentWindow, DocumentContentChange, InitialDocumentSnapshot,
+    SweepOriginalContext, SweepWindowLayout,
+};
+use core_edit_history::RecentEdit;
 use core_ipc::{
     ClientFrame, ServerFrame, WireCompletionRequest, WireDiagnostic, WireDiagnosticSeverity,
     WireDocumentChange, WireInitialDocument, WireOutlineItem, WireRelatedFileHint, WireSignals,
     WireTextChange,
 };
 use core_llama::GenerationClient;
-use core_models::{FimModelModule, FimModuleKind, FimRenderInput, GenerationMode};
+use core_models::{
+    FimModelModule, FimModuleKind, FimRenderInput, GenerationMode, NesModelModule, NesModuleKind,
+    NesRenderInput,
+};
 use core_types::{CompletionMode, Neighbor, Range};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::completion::{spawn_fim_completion, FimCompletion};
+use crate::completion::{spawn_fim_completion, spawn_nes_completion, FimCompletion, NesCompletion};
 
 const MAX_RELATED_HINT_NEIGHBORS: usize = 6;
 
@@ -99,17 +106,23 @@ impl CoreFrameHandler {
         request: &WireCompletionRequest,
         out: &UnboundedSender<ServerFrame>,
     ) {
-        if request.mode != CompletionMode::Fim {
-            send_error(out, request.request_id, "pilot routes FIM only");
-            return;
+        match request.mode {
+            CompletionMode::Fim => self.start_fim_completion(request, out),
+            CompletionMode::Nes => self.start_nes_completion(request, out),
         }
+    }
 
+    fn start_fim_completion(
+        &mut self,
+        request: &WireCompletionRequest,
+        out: &UnboundedSender<ServerFrame>,
+    ) {
         let Some(module) = FimModuleKind::by_model_id(&request.model_id) else {
             send_error(out, request.request_id, "unsupported FIM model");
             return;
         };
 
-        let prompt = match self.build_prompt(module, request) {
+        let prompt = match self.build_fim_prompt(module, request) {
             Ok(prompt) => prompt,
             Err(message) => {
                 send_error(out, request.request_id, &message);
@@ -129,7 +142,39 @@ impl CoreFrameHandler {
         });
     }
 
-    fn build_prompt(
+    fn start_nes_completion(
+        &mut self,
+        request: &WireCompletionRequest,
+        out: &UnboundedSender<ServerFrame>,
+    ) {
+        let Some(module) = NesModuleKind::by_model_id(&request.model_id) else {
+            send_error(out, request.request_id, "unsupported NES model");
+            return;
+        };
+
+        let prepared = match self.build_nes_completion(module, request) {
+            Ok(prepared) => prepared,
+            Err(message) => {
+                send_error(out, request.request_id, &message);
+                return;
+            }
+        };
+
+        let cancel = self.cancellation.start(request.request_id);
+        spawn_nes_completion(NesCompletion {
+            client: self.generation.clone(),
+            prompt: prepared.prompt,
+            max_tokens: prepared.max_tokens,
+            stop: prepared.stop,
+            cancel,
+            out: out.clone(),
+            request_id: request.request_id,
+            module,
+            range: prepared.range,
+        });
+    }
+
+    fn build_fim_prompt(
         &self,
         module: FimModuleKind,
         request: &WireCompletionRequest,
@@ -141,10 +186,11 @@ impl CoreFrameHandler {
         // Metadata rides through the existing repo-context channel, so the
         // model sees it now without waiting for a dedicated retrieval stage.
         let neighbors = self.prompt_context_neighbors(request);
+        let file_path = self.current_file_path(request)?;
 
         let input = FimRenderInput {
             language_id: &request.language_id,
-            file_path: &request.uri,
+            file_path: &file_path,
             prefix,
             suffix,
             neighbors: &neighbors,
@@ -152,6 +198,121 @@ impl CoreFrameHandler {
         };
         Ok(module.render_prompt(&input))
     }
+
+    fn build_nes_completion(
+        &self,
+        module: NesModuleKind,
+        request: &WireCompletionRequest,
+    ) -> Result<PreparedNesCompletion, String> {
+        let snapshot = self.sweep_snapshot(request)?;
+        let neighbors = self.prompt_context_neighbors(request);
+        let file_path = self.current_file_path(request)?;
+
+        let input = NesRenderInput {
+            language_id: &request.language_id,
+            file_path: &file_path,
+            original_window: snapshot.original.as_ref(),
+            current_window: snapshot.current.text,
+            window_start_line: snapshot.current.start_line,
+            window_line_count: snapshot.current.line_count,
+            cursor_byte_offset: snapshot.current.cursor_byte_offset,
+            broad_file_text: snapshot.broad.text,
+            neighbors: &neighbors,
+        };
+
+        Ok(PreparedNesCompletion {
+            prompt: module.render_prompt(&input),
+            max_tokens: sweep_max_tokens(&request.model_id),
+            stop: module.stop_tokens(),
+            range: replacement_range(&snapshot.current),
+        })
+    }
+
+    fn sweep_snapshot<'a>(
+        &'a self,
+        request: &'a WireCompletionRequest,
+    ) -> Result<core_documents::SweepDocumentSnapshot<'a>, String> {
+        let recent_edits = recent_edits_from_wire(&request.recent_edits);
+        self.store
+            .sweep_snapshot_at(
+                &request.uri,
+                request.version,
+                request.cursor,
+                sweep_window_layout(&request.model_id),
+                SweepOriginalContext {
+                    pre_edit_text: request.original_window_text.as_deref(),
+                    recent_edits: &recent_edits,
+                },
+            )
+            .map_err(|err| err.to_string())
+    }
+
+    fn current_file_path(&self, request: &WireCompletionRequest) -> Result<String, String> {
+        let path = self
+            .store
+            .file_path_at(&request.uri, request.version)
+            .map_err(|err| err.to_string())?
+            .unwrap_or(&request.uri);
+        Ok(path.to_owned())
+    }
+}
+
+struct PreparedNesCompletion {
+    prompt: String,
+    max_tokens: u32,
+    stop: &'static [&'static str],
+    range: Range,
+}
+
+fn sweep_window_layout(model_id: &str) -> SweepWindowLayout {
+    match model_id {
+        "sweep-small" => SweepWindowLayout {
+            before: 10,
+            after: 10,
+            broad: 160,
+        },
+        _ => SweepWindowLayout {
+            before: 10,
+            after: 10,
+            broad: 300,
+        },
+    }
+}
+
+fn sweep_max_tokens(_model_id: &str) -> u32 {
+    768
+}
+
+fn replacement_range(window: &CurrentDocumentWindow<'_>) -> Range {
+    let end_line = window.start_line + window.line_count - 1;
+    Range {
+        start_line: i32::try_from(window.start_line).unwrap_or(i32::MAX),
+        start_col: 0,
+        end_line: i32::try_from(end_line).unwrap_or(i32::MAX),
+        end_col: last_line_utf16_len(window.text),
+    }
+}
+
+fn last_line_utf16_len(text: &str) -> i32 {
+    let last_line = text.rsplit_once('\n').map_or(text, |(_, tail)| tail);
+    utf16_len(last_line)
+}
+
+fn utf16_len(text: &str) -> i32 {
+    text.chars()
+        .map(|ch| i32::try_from(ch.len_utf16()).unwrap_or(0))
+        .sum()
+}
+
+fn recent_edits_from_wire(edits: &[core_ipc::WireRecentEdit]) -> Vec<RecentEdit> {
+    edits
+        .iter()
+        .map(|edit| RecentEdit {
+            uri: edit.uri.clone(),
+            unified_diff: edit.unified_diff.clone(),
+            timestamp: edit.timestamp,
+        })
+        .collect()
 }
 
 fn send_error(out: &UnboundedSender<ServerFrame>, request_id: u64, message: &str) {

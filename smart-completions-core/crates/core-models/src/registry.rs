@@ -6,7 +6,9 @@
 
 use crate::qwen25::Qwen25Module;
 use crate::sweep::SweepModule;
-use crate::traits::{FimModelModule, FimRenderInput, GenerationMode};
+use crate::traits::{
+    FimModelModule, FimRenderInput, GenerationMode, NesModelModule, NesRenderInput,
+};
 
 /// Static-dispatch set of FIM model modules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +86,38 @@ impl NesModuleKind {
         match model_id {
             "sweep-default" | "sweep-small" => Some(Self::Sweep(SweepModule)),
             _ => None,
+        }
+    }
+}
+
+impl NesModelModule for NesModuleKind {
+    fn model_id(&self) -> &'static str {
+        match self {
+            Self::Sweep(module) => module.model_id(),
+        }
+    }
+
+    fn context_tokens(&self) -> usize {
+        match self {
+            Self::Sweep(module) => module.context_tokens(),
+        }
+    }
+
+    fn stop_tokens(&self) -> &'static [&'static str] {
+        match self {
+            Self::Sweep(module) => module.stop_tokens(),
+        }
+    }
+
+    fn render_prompt(&self, input: &NesRenderInput<'_>) -> String {
+        match self {
+            Self::Sweep(module) => module.render_prompt(input),
+        }
+    }
+
+    fn parse_response(&self, raw: &str) -> Option<String> {
+        match self {
+            Self::Sweep(module) => module.parse_response(raw),
         }
     }
 }

@@ -6,7 +6,7 @@ use core_ipc::{
     read_client_frame, read_server_frame, serve_connection, write_client_frame, ClientFrame,
     ConnectionEnd, FrameHandler, HandlerOutcome, ServerFrame, WireCompletionRequest,
     WireDiagnostic, WireDiagnosticSeverity, WireDocumentKind, WireInitialDocument, WireOutlineItem,
-    WireRelatedFileHint, WireShutdown, WireSignals,
+    WireRecentEdit, WireRelatedFileHint, WireShutdown, WireSignals,
 };
 use core_types::{CompletionMode, FileMode, Position, Range};
 
@@ -47,6 +47,12 @@ fn completion(request_id: u64) -> ClientFrame {
             end_col: 5,
         }),
         recent_edit_uris: vec!["file:///a.ts".to_string(), "file:///b.ts".to_string()],
+        recent_edits: vec![WireRecentEdit {
+            uri: "file:///a.ts".to_string(),
+            unified_diff: "--- a.ts\n+++ a.ts\n@@ -1,1 +1,1 @@\n-old\n+new".to_string(),
+            timestamp: 1,
+        }],
+        original_window_text: Some("old".to_string()),
         diagnostics: vec![WireDiagnostic {
             range: Range {
                 start_line: 0,
@@ -124,6 +130,30 @@ fn error_frame_round_trips_through_flatbuffers() {
     let frame = ServerFrame::Error {
         request_id: 9,
         message: "boom".to_string(),
+    };
+
+    let encoded = encode_server_frame(&frame);
+    let decoded = decode_server_frame(&encoded).unwrap();
+
+    assert_eq!(decoded, frame);
+}
+
+#[test]
+fn edit_frame_round_trips_through_flatbuffers() {
+    let frame = ServerFrame::Edit {
+        request_id: 3,
+        range: Range {
+            start_line: 0,
+            start_col: 0,
+            end_line: 1,
+            end_col: 0,
+        },
+        new_text: "const x = 2;".to_string(),
+        jump: Some(Position {
+            line: 4,
+            column: 2,
+            offset: 0,
+        }),
     };
 
     let encoded = encode_server_frame(&frame);

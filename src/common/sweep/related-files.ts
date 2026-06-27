@@ -14,10 +14,10 @@ export interface RelatedCandidate {
 }
 
 /**
- * Дедуплицирует и ранжирует кандидатов от всех источников контекста перед тем как они попадут
- * в Sweep file-блоки промпта; ограничивает число файлов topN чтобы не превысить бюджет токенов.
+ * Дедуплицирует и ранжирует related-кандидатов, сохраняя их метаданные для путей,
+ * которым нужен не только content, но и path/range/score для дальнейшего envelope-building.
  */
-export function dedupeRankRelated(candidates: RelatedCandidate[], topN: number): SweepRelatedFile[] {
+export function selectRelatedCandidates(candidates: RelatedCandidate[], topN: number): RelatedCandidate[] {
     if (topN <= 0) {
         LOG.info('Sweep related-file ranking skipped because topN is disabled', { candidates: candidates.length, topN });
         return [];
@@ -31,26 +31,37 @@ export function dedupeRankRelated(candidates: RelatedCandidate[], topN: number):
         }
     }
 
-    // Сортировка по убыванию score; при равном score сохраняется порядок источников (LSP > search > SCM).
     indexed.sort((a, b) => {
         const sa = a.candidate.score ?? 0;
         const sb = b.candidate.score ?? 0;
         return sb - sa || a.index - b.index;
     });
 
-    const out: SweepRelatedFile[] = [];
+    const out: RelatedCandidate[] = [];
     for (const { candidate } of indexed) {
-        // Ключ path:start:end предотвращает дубликаты одного файлового фрагмента от разных источников.
         const key = `${candidate.filePath}:${candidate.startLine ?? ''}:${candidate.endLine ?? ''}`;
         if (seen.has(key)) {
             continue;
         }
         seen.add(key);
-        out.push({ filePath: candidate.filePath, content: candidate.content });
+        out.push(candidate);
         if (out.length >= topN) {
             break;
         }
     }
     LOG.info('Sweep related files ranked', { candidates: candidates.length, nonEmpty: indexed.length, selected: out.length, topN });
+    return out;
+}
+
+/**
+ * Дедуплицирует и ранжирует кандидатов от всех источников контекста перед тем как они попадут
+ * в Sweep file-блоки промпта; ограничивает число файлов topN чтобы не превысить бюджет токенов.
+ */
+export function dedupeRankRelated(candidates: RelatedCandidate[], topN: number): SweepRelatedFile[] {
+    const selected = selectRelatedCandidates(candidates, topN);
+    const out = new Array<SweepRelatedFile>(selected.length);
+    for (let i = 0; i < selected.length; i++) {
+        out[i] = { filePath: selected[i].filePath, content: selected[i].content };
+    }
     return out;
 }

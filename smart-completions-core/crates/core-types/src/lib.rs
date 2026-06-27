@@ -31,17 +31,17 @@ pub enum FileMode {
     Prose,
 }
 
-/// Cursor position expressed in both line/column and absolute byte offset.
+/// Cursor position expressed in both line/column and absolute UTF-16 offset.
 ///
-/// The offset is authoritative when greater than zero; line/column is the
-/// fallback Monaco always provides.
+/// Monaco reports offsets and columns in UTF-16 code units. The Rust core
+/// converts them to UTF-8 byte offsets when it resolves shadow-document text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Position {
     /// Zero-based line.
     pub line: i32,
     /// Zero-based column.
     pub column: i32,
-    /// Absolute byte offset, or zero when unknown.
+    /// Absolute UTF-16 code-unit offset, or zero when unknown.
     pub offset: u32,
 }
 

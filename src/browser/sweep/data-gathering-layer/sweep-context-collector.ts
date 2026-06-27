@@ -4,8 +4,8 @@ import * as monaco from '@theia/monaco-editor-core';
 import { DiagnosticDTO } from '../../../common/editor-dto';
 import { RecentEdit } from '../../../common/edit-history-types';
 import { buildRelatedFileQueries } from '../../../common/sweep/retrieval-queries';
-import { dedupeRankRelated } from '../../../common/sweep/related-files';
-import { formatOutline } from '../../../common/sweep/outline';
+import { dedupeRankRelated, RelatedCandidate, selectRelatedCandidates } from '../../../common/sweep/related-files';
+import { formatOutline, OutlineSymbol } from '../../../common/sweep/outline';
 import { SweepLogger } from '../../../common/sweep/logger';
 import { SweepRelatedFile } from '../../../common/sweep/types';
 import { collectRelatedCandidates } from './related-source-composite';
@@ -32,7 +32,9 @@ export interface CollectSweepContextParams {
 // Результат сбора контекста; передаётся в SweepRequestBuilder для финальной сборки RPC-запроса.
 export interface CollectedSweepContext {
     relatedFiles: SweepRelatedFile[];
+    selectedRelatedCandidates: RelatedCandidate[];
     outline?: string;
+    outlineSymbols?: OutlineSymbol[];
 }
 
 /** Координирует все best-effort источники Sweep-контекста и изолирует ошибки отдельных источников от основного потока. */
@@ -55,10 +57,8 @@ export class SweepContextCollector {
         const cursorLine0 = params.position.lineNumber - 1;
         const lspPosition = { line: cursorLine0, character: params.position.column - 1 };
 
-        const outline = await this.safeAsync(async () => {
-            const symbols = await this.symbolSource.symbols(params.model);
-            return symbols.length ? formatOutline(symbols, cursorLine0) : '';
-        }, '', 'outline');
+        const outlineSymbols = await this.safeAsync(() => this.symbolSource.symbols(params.model), [], 'outline');
+        const outline = outlineSymbols.length ? formatOutline(outlineSymbols, cursorLine0) : '';
 
         const queries = buildRelatedFileQueries({
             recentEdits: params.recentEdits,
@@ -81,6 +81,7 @@ export class SweepContextCollector {
         }, (id, count) => {
             perSource[id] = count;
         });
+        const selectedRelatedCandidates = selectRelatedCandidates(relatedCandidates, params.relatedTopN);
         const relatedFiles = dedupeRankRelated(relatedCandidates, params.relatedTopN);
 
         LOG.info('Sweep context collected', {
@@ -91,7 +92,12 @@ export class SweepContextCollector {
             hasOutline: Boolean(outline),
             diagnostics: params.diagnostics.length,
         });
-        return { relatedFiles, outline: outline || undefined };
+        return {
+            relatedFiles,
+            selectedRelatedCandidates,
+            outline: outline || undefined,
+            outlineSymbols: outlineSymbols.length ? outlineSymbols : undefined,
+        };
     }
 
     /**

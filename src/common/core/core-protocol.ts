@@ -45,7 +45,7 @@ export interface CoreDocumentChange {
     changes: CoreTextChange[];
 }
 
-/** Cursor position (1-based line/column plus absolute offset). */
+/** Cursor position (1-based line/column plus absolute UTF-16 offset). */
 export interface CoreCursor {
     lineNumber: number;
     column: number;
@@ -103,6 +103,20 @@ export interface CoreSignals {
     retrievalSignalHints?: string[];
 }
 
+/** Compact recent edit payload forwarded to the Rust core. */
+export interface CoreRecentEdit {
+    uri: string;
+    unifiedDiff: string;
+    timestamp: number;
+}
+
+/** One edit suggestion returned by the Rust core. */
+export interface CoreCompletionEdit {
+    range: CoreIndexedRange;
+    newText: string;
+    jumpTo?: CoreIndexedPosition;
+}
+
 /** Config push matching the dedicated ConfigUpdate frame in the schema. */
 export interface CoreConfigUpdate {
     configVersion: number;
@@ -121,6 +135,8 @@ export interface CoreCompletionRequest {
     cursor: CoreCursor;
     editableRegion?: CoreIndexedRange;
     recentEditUris?: string[];
+    recentEdits?: CoreRecentEdit[];
+    originalWindowText?: string;
     diagnostics?: CoreDiagnostic[];
     outline?: CoreOutlineItem[];
     relatedFileHints?: CoreRelatedFileHint[];
@@ -129,10 +145,11 @@ export interface CoreCompletionRequest {
     configJson?: string;
 }
 
-/** Result of a routed completion request: the assembled text plus status. */
+/** Result of a routed completion request: either text or one edit. */
 export interface CoreCompletionResult {
     accepted: boolean;
-    text: string;
+    text?: string;
+    edit?: CoreCompletionEdit;
     reason?: string;
 }
 

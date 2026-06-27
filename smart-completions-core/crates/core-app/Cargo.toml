@@ -7,6 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+core-edit-history = { path = "../core-edit-history" }
 core-types = { path = "../core-types" }
 core-documents = { path = "../core-documents" }
 core-dispatch = { path = "../core-dispatch" }

@@ -212,6 +212,7 @@ dependencies = [
  "bytes",
  "core-dispatch",
  "core-documents",
+ "core-edit-history",
  "core-ipc",
  "core-llama",
  "core-models",
@@ -234,9 +235,14 @@ dependencies = [
 name = "core-documents"
 version = "0.1.0"
 dependencies = [
+ "core-edit-history",
  "core-types",
  "thiserror",
 ]
+
+[[package]]
+name = "core-edit-history"
+version = "0.1.0"
 
 [[package]]
 name = "core-ipc"

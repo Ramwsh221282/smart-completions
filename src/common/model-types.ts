@@ -40,6 +40,15 @@ export const COMPLETION_SCHEDULING_MODES = ['parallel', 'idle-nes'] as const;
  */
 export type CompletionSchedulingMode = typeof COMPLETION_SCHEDULING_MODES[number];
 
+// Режимы маршрутизации NES через Rust core; const-кортеж держит schema и тип в синхроне.
+export const CORE_NES_ROUTINGS = ['fallback', 'core-only'] as const;
+
+/**
+ * Маршрутизация NES при включённом Rust core.
+ * fallback — при пустом core-результате идём в TS backend; core-only — TS NES path отключён.
+ */
+export type CoreNesRouting = typeof CORE_NES_ROUTINGS[number];
+
 /**
  * Embedding-модель. Свободная строка — имя модели для llama.cpp /v1/embeddings.
  * Не ограничиваем набор: можно подключить любую embedding-модель.
@@ -90,6 +99,11 @@ export function normalizeCompletionSchedulingMode(value: unknown): CompletionSch
     // Старые fim-only/nes-only/nes-priority были тестовыми артефактами;
     // для изоляции теперь используются fim.enabled / nes.enabled.
     return 'parallel';
+}
+
+/** Нормализует значение core NES routing; неизвестное значение деградирует к безопасному fallback. */
+export function normalizeCoreNesRouting(value: unknown): CoreNesRouting {
+    return value === 'core-only' ? 'core-only' : 'fallback';
 }
 
 export function isGraniteFimModel(modelId: FimModelId): boolean {

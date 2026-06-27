@@ -37,8 +37,16 @@ pub struct NesRenderInput<'a> {
     pub language_id: &'a str,
     /// Workspace-relative path of the current file.
     pub file_path: &'a str,
+    /// The original pre-edit window for the triad.
+    pub original_window: &'a str,
     /// The editable window around the cursor.
     pub current_window: &'a str,
+    /// Zero-based line where the editable window starts.
+    pub window_start_line: usize,
+    /// Number of logical lines in the editable window.
+    pub window_line_count: usize,
+    /// UTF-8 byte offset of the cursor inside `current_window`.
+    pub cursor_byte_offset: usize,
     /// Broader slice of the current file for context.
     pub broad_file_text: &'a str,
     /// Retrieved repo neighbors, already ranked and trimmed.

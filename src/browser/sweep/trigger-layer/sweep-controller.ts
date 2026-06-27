@@ -3,16 +3,20 @@ import { CancellationTokenSource, Disposable, DisposableCollection } from '@thei
 import { PreferenceChange, PreferenceService } from '@theia/core/lib/common/preferences/preference-service';
 import { inject, injectable } from '@theia/core/shared/inversify';
 import * as monaco from '@theia/monaco-editor-core';
-import type { CompletionSchedulingMode } from '../../../common/model-types';
+import { CoreBackendService } from '../../../common/core/core-protocol';
+import { buildCoreCompletionRequest } from '../../../common/core/core-request-mapping';
+import type { CompletionSchedulingMode, CoreNesRouting } from '../../../common/model-types';
 import type { NesConfig, NesResponse } from '../../../common/nes-types';
 import { NesBackendService } from '../../../common/protocol';
 import { SweepLogger } from '../../../common/sweep/logger';
 import { NesAcceptHookContext, NesViewZoneRenderer } from '../../nes-render/nes-view-zone-renderer';
-import { readCompletionSchedulingMode, readNesConfig } from '../../preferences/preferences-schema';
+import { readCompletionSchedulingMode, readCoreNesRouting, readNesConfig } from '../../preferences/preferences-schema';
 import { fileModeForLanguage } from '../../shared/file-mode';
 import { SweepContextCollector } from '../data-gathering-layer/sweep-context-collector';
 import { SweepEditHistoryRecorder } from '../data-gathering-layer/sweep-edit-history-recorder';
+import { buildSweepCoreContext } from '../data-formatting-layer/sweep-core-envelope';
 import { SweepRequestBuilder } from '../data-formatting-layer/sweep-request-builder';
+import { resolveSweepPrediction } from './sweep-prediction-router';
 import { DiagnosticsDeltaSnapshot, DiagnosticsDeltaVerifier } from '../quality/diagnostics-delta-verifier';
 
 // Логгер триггерного слоя Sweep на фронтенде.
@@ -28,6 +32,7 @@ interface SweepTriggerState {
 /** Триггерный контроллер Sweep: слушает редакторы, собирает контекст, вызывает бекенд и передаёт правки рендереру. */
 @injectable()
 export class SweepController implements FrontendApplicationContribution, Disposable {
+    @inject(CoreBackendService) private readonly core!: CoreBackendService;
     // RPC-фасад NES бекенда для отправки predict/configure запросов.
     @inject(NesBackendService) private readonly nes!: NesBackendService;
     // Сервис чтения и подписки на preference-настройки Theia.
@@ -50,6 +55,10 @@ export class SweepController implements FrontendApplicationContribution, Disposa
     private config!: NesConfig;
     // Флаг глобального включения NES из настроек.
     private enabled = true;
+    // Флаг experimental Rust-core path; при false всегда идём в TS backend.
+    private coreEnabled = false;
+    // Маршрутизация NES при включённом core; core-only отключает TS NES fallback для sweep-моделей.
+    private coreNesRouting: CoreNesRouting = 'fallback';
     // Политика планирования FIM/NES; заменяет старый coordinationMode.
     private schedulingMode: CompletionSchedulingMode = 'parallel';
     // Таймер debounce для откладывания trigger после последнего события редактора.
@@ -58,6 +67,8 @@ export class SweepController implements FrontendApplicationContribution, Disposa
     private lastChangeAt = 0;
     // Токен отмены текущего in-flight Sweep запроса.
     private inFlight: CancellationTokenSource | undefined;
+    // Монотонный numeric id для корреляции core completion запросов.
+    private requestCounter = 0;
 
     /**
      * Точка входа при старте приложения: отправляет конфиг на бекенд,
@@ -77,6 +88,7 @@ export class SweepController implements FrontendApplicationContribution, Disposa
         this.toDispose.push(this.preferences.onPreferenceChanged((event: PreferenceChange) => {
             if (
                 event.preferenceName.startsWith('smart-completions.nes') ||
+                event.preferenceName.startsWith('smart-completions.core') ||
                 event.preferenceName === 'smart-completions.completionSchedulingMode' ||
                 event.preferenceName === 'smart-completions.coordinationMode'
             ) {
@@ -184,9 +196,12 @@ export class SweepController implements FrontendApplicationContribution, Disposa
             const collected = await this.collectContext(state, snapshot, source);
             if (this.isStale(state.model, version, source)) return;
 
-            const request = this.requestBuilder.request(state.model, snapshot, collected);
-            const response = await this.nes.predict(request, source.token);
-            if (this.isStale(state.model, version, source)) return;
+            const response = await resolveSweepPrediction(
+                { coreEnabled: this.coreEnabled, routing: this.coreNesRouting },
+                () => this.tryCorePrediction(state.model, state.position, snapshot, collected, version, source),
+                () => this.predictViaTsBackend(state.model, snapshot, collected, source),
+            );
+            if (!response || this.isStale(state.model, version, source)) return;
 
             this.renderIfUseful(state.editor, response);
         } catch (error) {
@@ -206,6 +221,8 @@ export class SweepController implements FrontendApplicationContribution, Disposa
     private readControllerConfig(): void {
         this.config = readNesConfig(this.preferences);
         this.enabled = this.preferences.get<boolean>('smart-completions.nes.enabled', true);
+        this.coreEnabled = this.preferences.get<boolean>('smart-completions.core.enabled', false);
+        this.coreNesRouting = readCoreNesRouting(this.preferences);
         this.schedulingMode = readCompletionSchedulingMode(this.preferences);
     }
 
@@ -279,6 +296,56 @@ export class SweepController implements FrontendApplicationContribution, Disposa
         });
     }
 
+    private async tryCorePrediction(
+        model: monaco.editor.ITextModel,
+        position: monaco.Position,
+        snapshot: NonNullable<ReturnType<SweepRequestBuilder['snapshot']>>,
+        collected: Awaited<ReturnType<SweepContextCollector['collect']>>,
+        version: number,
+        source: CancellationTokenSource,
+    ): Promise<NesResponse | undefined> {
+        try {
+            const coreContext = buildSweepCoreContext(snapshot, collected, this.config.queryMaxChars);
+            const result = await this.core.requestCompletion(buildCoreCompletionRequest({
+                requestId: this.nextRequestId(),
+                mode: 'nes',
+                modelId: this.config.modelId,
+                uri: model.uri.toString(),
+                version,
+                languageId: model.getLanguageId(),
+                fileMode: fileModeForLanguage(model.getLanguageId()),
+                cursor: {
+                    lineNumber: position.lineNumber,
+                    column: position.column,
+                    offset: model.getOffsetAt(position),
+                },
+                configVersion: 0,
+                context: coreContext,
+            }));
+            if (!result.accepted || !result.edit || source.token.isCancellationRequested || model.getVersionId() !== version) {
+                return undefined;
+            }
+            return {
+                edits: [{ range: result.edit.range, newText: result.edit.newText }],
+                primaryRange: result.edit.range,
+                jumpTo: result.edit.jumpTo,
+                modelId: this.config.modelId,
+            };
+        } catch {
+            return undefined;
+        }
+    }
+
+    private predictViaTsBackend(
+        model: monaco.editor.ITextModel,
+        snapshot: NonNullable<ReturnType<SweepRequestBuilder['snapshot']>>,
+        collected: Awaited<ReturnType<SweepContextCollector['collect']>>,
+        source: CancellationTokenSource,
+    ): Promise<NesResponse> {
+        const request = this.requestBuilder.request(model, snapshot, collected);
+        return this.nes.predict(request, source.token);
+    }
+
     /** Проверяет staleness по версии модели или отмене запроса; при true trigger прерывается без рендера. */
     private isStale(
         model: monaco.editor.ITextModel,
@@ -292,6 +359,11 @@ export class SweepController implements FrontendApplicationContribution, Disposa
         if (response.edits.length === 0) return;
         this.renderer.show(editor, response);
         LOG.info('Sweep suggestion rendered', { edits: response.edits.length, modelId: response.modelId });
+    }
+
+    private nextRequestId(): number {
+        this.requestCounter += 1;
+        return this.requestCounter;
     }
 
     private handleTriggerError(error: unknown): void {

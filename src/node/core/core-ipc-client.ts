@@ -2,12 +2,13 @@
 // covers a richer envelope than the active FIM pilot path, so the TS side
 // packs the current subset and leaves future-only fields at null/default.
 //
-// NOTE: Monaco ranges are UTF-16 and 1-based; the core treats columns as
-// 0-based. Full UTF-16<->byte reconciliation is pending; for now we shift to
-// 0-based, which is exact for ASCII content.
+// NOTE: Monaco ranges are UTF-16 and 1-based on the TS side. The Rust shadow
+// document store resolves the transmitted 0-based UTF-16 columns/offsets to
+// UTF-8 byte offsets when it builds prefix/suffix and applies changes.
 
 import * as net from 'node:net';
 import {
+    CoreCompletionEdit,
     CoreConfigUpdate,
     CoreCompletionRequest,
     CoreDocumentChange,
@@ -26,6 +27,7 @@ import {
     type WireInitialDocument,
     type WireMode,
     type WireOutlineItem,
+    type WireRecentEdit,
     type WireRelatedFileHint,
     type WireSignals,
     type WireTextChange,
@@ -36,6 +38,11 @@ const REQUEST_TIMEOUT_MS = 15_000;
 
 type CoreFileModeInput = 'code' | 'prose';
 type CoreModeInput = 'fim' | 'nes';
+
+export interface CoreIpcCompletionResult {
+    text?: string;
+    edit?: CoreCompletionEdit;
+}
 
 /** Maps the high-level file mode to the wire enum spelling. */
 export function fileModeToWire(mode: CoreFileModeInput): WireFileMode {
@@ -87,6 +94,8 @@ export function toWireCompletionRequest(request: CoreCompletionRequest): WireCom
         },
         editable_region: request.editableRegion ? toWireIndexedRange(request.editableRegion) : undefined,
         recent_edit_uris: request.recentEditUris ?? [],
+        recent_edits: toWireRecentEdits(request.recentEdits),
+        original_window_text: request.originalWindowText,
         diagnostics: toWireDiagnostics(request.diagnostics),
         outline: toWireOutline(request.outline),
         related_file_hints: toWireRelatedFileHints(request.relatedFileHints),
@@ -114,7 +123,8 @@ export function encodeFrame(frame: ClientFrame): Buffer {
 
 interface PendingCompletion {
     tokens: string[];
-    resolve: (text: string) => void;
+    edit: CoreCompletionEdit | undefined;
+    resolve: (result: CoreIpcCompletionResult) => void;
     reject: (error: Error) => void;
     timer: ReturnType<typeof setTimeout>;
 }
@@ -155,9 +165,9 @@ export class CoreIpcClient {
         await this.send({ kind: 'ConfigUpdate', data: toWireConfigUpdate(update) });
     }
 
-    /** Sends a completion request and resolves with the assembled token text. */
-    requestCompletion(request: CoreCompletionRequest): Promise<string> {
-        return new Promise<string>((resolve, reject) => {
+    /** Sends a completion request and resolves with text or one edit. */
+    requestCompletion(request: CoreCompletionRequest): Promise<CoreIpcCompletionResult> {
+        return new Promise<CoreIpcCompletionResult>((resolve, reject) => {
             this.registerPending(request.requestId, resolve, reject);
             this.send({ kind: 'CompletionRequest', data: toWireCompletionRequest(request) }).catch(
                 error => this.settleReject(request.requestId, toError(error)),
@@ -172,11 +182,11 @@ export class CoreIpcClient {
 
     private registerPending(
         requestId: number,
-        resolve: (text: string) => void,
+        resolve: (result: CoreIpcCompletionResult) => void,
         reject: (error: Error) => void,
     ): void {
         const timer = setTimeout(() => this.settleResolveAccumulated(requestId), REQUEST_TIMEOUT_MS);
-        this.pending.set(requestId, { tokens: [], resolve, reject, timer });
+        this.pending.set(requestId, { tokens: [], edit: undefined, resolve, reject, timer });
     }
 
     private attachReader(socket: net.Socket): void {
@@ -210,25 +220,35 @@ export class CoreIpcClient {
     private applyFrame(
         pending: PendingCompletion,
         kind: 'Token' | 'Done' | 'Error' | 'Edit',
-        interpreted: { requestId: number; text?: string; message?: string },
+        interpreted: {
+            requestId: number;
+            text?: string;
+            message?: string;
+            newText?: string;
+            range?: { start_line: number; start_col: number; end_line: number; end_col: number };
+            jump?: { line: number; column: number; offset: number };
+        },
     ): void {
         if (kind === 'Token') {
             pending.tokens.push(interpreted.text ?? '');
+        } else if (kind === 'Edit') {
+            pending.edit = toCoreEdit(interpreted);
         } else if (kind === 'Done') {
-            this.settleResolve(interpreted.requestId, pending.tokens.join(''));
+            this.settleResolve(interpreted.requestId, pending);
         } else if (kind === 'Error') {
             this.settleReject(interpreted.requestId, new Error(interpreted.message ?? 'core error'));
         }
     }
 
-    private settleResolve(requestId: number, text: string): void {
-        const pending = this.takePending(requestId);
-        pending?.resolve(text);
+    private settleResolve(requestId: number, pending: PendingCompletion): void {
+        const result = pending.edit ? { edit: pending.edit } : { text: pending.tokens.join('') };
+        const active = this.takePending(requestId);
+        active?.resolve(result);
     }
 
     private settleResolveAccumulated(requestId: number): void {
         const pending = this.takePending(requestId);
-        pending?.resolve(pending.tokens.join(''));
+        pending?.resolve(pending.edit ? { edit: pending.edit } : { text: pending.tokens.join('') });
     }
 
     private settleReject(requestId: number, error: Error): void {
@@ -330,6 +350,17 @@ function toWireRelatedFileHints(
     }));
 }
 
+function toWireRecentEdits(edits: CoreCompletionRequest['recentEdits']): WireRecentEdit[] {
+    if (!edits?.length) {
+        return [];
+    }
+    return edits.map(edit => ({
+        uri: edit.uri,
+        unified_diff: edit.unifiedDiff,
+        timestamp: edit.timestamp,
+    }));
+}
+
 function toWireSignals(signals: CoreCompletionRequest['signals']): WireSignals | undefined {
     if (!signals) {
         return undefined;
@@ -343,6 +374,26 @@ function toWireSignals(signals: CoreCompletionRequest['signals']): WireSignals |
         diagnostic_symbols: signals.diagnosticSymbols ?? [],
         fuzzy_symbols: signals.fuzzySymbols ?? [],
         retrieval_signal_hints: signals.retrievalSignalHints ?? [],
+    };
+}
+
+function toCoreEdit(interpreted: {
+    newText?: string;
+    range?: { start_line: number; start_col: number; end_line: number; end_col: number };
+    jump?: { line: number; column: number; offset: number };
+}): CoreCompletionEdit | undefined {
+    if (!interpreted.range || interpreted.newText === undefined) {
+        return undefined;
+    }
+    return {
+        range: {
+            start: { line: interpreted.range.start_line, character: interpreted.range.start_col },
+            end: { line: interpreted.range.end_line, character: interpreted.range.end_col },
+        },
+        newText: interpreted.newText,
+        jumpTo: interpreted.jump
+            ? { line: interpreted.jump.line, character: interpreted.jump.column }
+            : undefined,
     };
 }
 

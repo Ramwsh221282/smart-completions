@@ -1,4 +1,4 @@
-//! Integration tests for the FIM pilot route through the core handler.
+//! Integration tests for the Rust core completion routes.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -74,6 +74,13 @@ fn completion(model_id: &str, mode: CompletionMode) -> ClientFrame {
             end_col: 10,
         }),
         recent_edit_uris: vec!["file:///a.ts".to_string(), "file:///b.ts".to_string()],
+        recent_edits: vec![core_ipc::WireRecentEdit {
+            uri: "file:///a.ts".to_string(),
+            unified_diff: "--- a.ts\n+++ a.ts\n@@ -1,1 +1,1 @@\n-const x = 0;\n+const x = 1;"
+                .to_string(),
+            timestamp: 1,
+        }],
+        original_window_text: Some("const x = 0;\n".to_string()),
         diagnostics: vec![WireDiagnostic {
             range: Range {
                 start_line: 0,
@@ -295,8 +302,18 @@ async fn rejects_an_unsupported_fim_model_with_an_error_frame() {
 }
 
 #[tokio::test]
-async fn rejects_nes_requests_in_the_fim_pilot() {
-    let mut handler = CoreFrameHandler::new(GenerationClient::new("http://127.0.0.1:1/completion"));
+async fn routes_a_nes_completion_and_emits_edit_then_done() {
+    let server = MockServer::start().await;
+    mount_completion(
+        &server,
+        "data: {\"content\":\"const x = 2;\"}\n\ndata: [DONE]\n\n",
+    )
+    .await;
+
+    let mut handler = CoreFrameHandler::new(GenerationClient::new(format!(
+        "{}/completion",
+        server.uri()
+    )));
     let (frames, mut receiver) = unbounded_channel::<ServerFrame>();
 
     drive(&mut handler, snapshot(), &frames);
@@ -306,8 +323,30 @@ async fn rejects_nes_requests_in_the_fim_pilot() {
         &frames,
     );
 
-    let frame = next_frame(&mut receiver).await;
-    assert!(matches!(frame, ServerFrame::Error { request_id: 1, .. }));
+    assert_eq!(
+        next_frame(&mut receiver).await,
+        ServerFrame::Edit {
+            request_id: 1,
+            range: Range {
+                start_line: 0,
+                start_col: 0,
+                end_line: 1,
+                end_col: 0,
+            },
+            new_text: "const x = 2;".to_string(),
+            jump: None,
+        }
+    );
+    assert_eq!(
+        next_frame(&mut receiver).await,
+        ServerFrame::Done { request_id: 1 }
+    );
+
+    let requests = server.received_requests().await.unwrap();
+    let body = String::from_utf8(requests[0].body.clone()).unwrap();
+    assert!(body.contains("<|file_sep|>original/a.ts:1:2\\nconst x = 0;\\n"));
+    assert!(body.contains("<|file_sep|>current/a.ts:1:2\\nconst x = <|cursor|>1;\\n"));
+    assert!(body.contains("<|file_sep|>updated/a.ts:1:2\\n"));
 }
 
 fn temp_workspace_root() -> PathBuf {

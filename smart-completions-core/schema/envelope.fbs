@@ -80,6 +80,12 @@ table Signals {
   retrieval_signal_hints:[string];
 }
 
+table RecentEdit {
+  uri:string;
+  unified_diff:string;
+  timestamp:ulong;
+}
+
 table CompletionRequest {
   request_id:ulong;
   mode:Mode;
@@ -91,6 +97,8 @@ table CompletionRequest {
   cursor:Position;
   editable_region:Range;
   recent_edit_uris:[string];
+  recent_edits:[RecentEdit];
+  original_window_text:string;
   diagnostics:[Diagnostic];
   outline:[OutlineItem];
   related_file_hints:[RelatedFileHint];
