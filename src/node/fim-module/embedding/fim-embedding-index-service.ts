@@ -16,39 +16,33 @@ export class FimEmbeddingIndexService {
     private embedderId = DEFAULT_FIM_EMBEDDER_ID;
     private roots: string[] = [];
     private retrievalOptions = { topN: 4, prefixTailChars: 400 };
-    private readonly service: EmbeddingService;
-
-    constructor() {
-        this.service = new EmbeddingService({
-            storageDir: resolveFimEmbeddingStorageDir(),
-            createEmbedClient: config => this.createEmbedClient(config),
-            transformDocumentText: text => buildDocumentInput(this.profile(), text),
-        });
-    }
+    private service: EmbeddingService | undefined;
+    private serviceStorageKey = '';
 
     async configure(config: EmbeddingConfig, workspaceRoots: string[], embedderId: string): Promise<void> {
         this.embedderId = embedderId || DEFAULT_FIM_EMBEDDER_ID;
         this.roots = workspaceRoots;
         this.retrievalOptions = { topN: config.topN, prefixTailChars: config.prefixTailChars };
-        await this.service.configure(this.embeddingConfig(config), workspaceRoots);
+        await this.resetServiceIfNeeded();
+        await this.service?.configure(this.embeddingConfig(config), workspaceRoots);
         if (config.indexOnOpen) {
-            void this.service.start().catch(error => {
+            void this.service?.start().catch(error => {
                 LOG.warn('FIM embedding index start failed', { error: error instanceof Error ? error.message : String(error) });
             });
         }
     }
 
     async rebuild(): Promise<void> {
-        await this.service.rebuild();
+        await this.service?.rebuild();
     }
 
     async reindexFile(uri: string, signal?: AbortSignal): Promise<void> {
-        await this.service.reindexFile(uri, signal);
+        await this.service?.reindexFile(uri, signal);
     }
 
     async retrieve(queryText: string, topN: number, signal?: AbortSignal): Promise<Neighbor[]> {
         const profile = this.profile();
-        return this.service.retrieve(queryText, topN, signal, buildQueryInput(profile, queryText));
+        return this.service?.retrieve(queryText, topN, signal, buildQueryInput(profile, queryText)) ?? [];
     }
 
     getRetrievalOptions(): { topN: number; prefixTailChars: number } {
@@ -60,7 +54,21 @@ export class FimEmbeddingIndexService {
     }
 
     async dispose(): Promise<void> {
-        await this.service.dispose();
+        await this.service?.dispose();
+    }
+
+    private async resetServiceIfNeeded(): Promise<void> {
+        const nextStorageKey = this.storageKey();
+        if (this.service && this.serviceStorageKey === nextStorageKey) {
+            return;
+        }
+        await this.service?.dispose();
+        this.service = new EmbeddingService({
+            storageDir: resolveFimEmbeddingStorageDir(this.embedderId),
+            createEmbedClient: config => this.createEmbedClient(config),
+            transformDocumentText: text => buildDocumentInput(this.profile(), text),
+        });
+        this.serviceStorageKey = nextStorageKey;
     }
 
     private createEmbedClient(config: EmbeddingConfig): EmbedClient {
@@ -74,6 +82,10 @@ export class FimEmbeddingIndexService {
 
     private profile() {
         return getFimEmbedderProfile(this.embedderId);
+    }
+
+    private storageKey(): string {
+        return `${resolveFimEmbeddingStorageDir(this.embedderId)}::${this.embedderId}`;
     }
 }
 
@@ -94,7 +106,8 @@ class FimProfiledEmbedClient implements EmbedClient {
     }
 }
 
-function resolveFimEmbeddingStorageDir(): string {
-    return process.env.SC_FIM_STORAGE_DIR
+function resolveFimEmbeddingStorageDir(embedderId: string): string {
+    const root = process.env.SC_FIM_STORAGE_DIR
         ?? path.join(os.homedir(), '.theia', 'smart-completions', 'fim-embedding');
+    return path.join(root, embedderId);
 }

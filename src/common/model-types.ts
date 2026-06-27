@@ -47,3 +47,7 @@ export const FIM_MODEL_TEMPLATE: Record<FimModelId, FimTemplateId> = {
     'granite-4.1-8b': 'granite',
     'granite-4.1-3b': 'granite',
 };
+
+export function isGraniteFimModel(modelId: FimModelId): boolean {
+    return FIM_MODEL_TEMPLATE[modelId] === 'granite';
+}

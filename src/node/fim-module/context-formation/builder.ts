@@ -1,3 +1,4 @@
+import { buildGraniteEditSnippets, renderGranitePrompt } from '../../../common/granite41/granite-prompt-builder';
 import type { Neighbor } from '../../../common/embedding-types';
 import { buildEditHistorySnippets } from '../../../common/fim/fim-udiff';
 import type { FimRelatedFile } from '../../../common/fim-types';
@@ -10,6 +11,7 @@ import { trimFimContext } from './semantic-trim';
 
 export interface BuildFimPromptInput {
     modelId: FimModelId;
+    languageId?: string;
     fileMode: FileMode;
     prefix: string;
     suffix: string;
@@ -30,45 +32,97 @@ export interface BuiltFimPrompt {
     llamaModel: string;
 }
 
+interface PreparedRepoContext {
+    neighbors: Neighbor[];
+    relatedFiles: FimRelatedFile[];
+    editSnippets: string[];
+    reservedChars: number;
+    useRepoContext: boolean;
+}
+
 export function buildFimPrompt(input: BuildFimPromptInput): BuiltFimPrompt {
     const spec = getFimModelSpec(input.modelId);
-    const repoTokens = spec.supportsRepoContext && spec.repoNameToken && spec.fileToken
-        ? { repoNameToken: spec.repoNameToken, fileToken: spec.fileToken }
-        : undefined;
-    const normalizedNeighbors = spec.supportsRepoContext ? normalizeNeighbors(input.neighbors ?? []) : [];
-    const normalizedRelatedFiles = spec.supportsRepoContext ? normalizeRelatedFiles(input.relatedFiles ?? []) : [];
-    const editSnippets = repoTokens
-        ? buildEditHistorySnippets(repoTokens.fileToken, input.recentEdits ?? [], input.maxRecentEditSnippets ?? 3)
-        : [];
-    const reservedChars = normalizedNeighbors.reduce((sum, n) => sum + n.text.length + n.filePath.length + 8, 0)
-        + normalizedRelatedFiles.reduce((sum, file) => sum + file.content.length + file.filePath.length + 8, 0)
-        + editSnippets.reduce((sum, snippet) => sum + snippet.length, 0);
+    const repoContext = prepareRepoContext(input, spec);
     const trimmed = trimFimContext(normalizeCrlf(input.prefix), normalizeCrlf(input.suffix), {
         fileMode: input.fileMode,
         contextSize: input.contextSize,
-        reservedChars,
+        reservedChars: repoContext.reservedChars,
     });
-    const fim = `${spec.tokens.prefix}${trimmed.prefix}${spec.tokens.suffix}${trimmed.suffix}${spec.tokens.middle}`;
-    // Repo-слоты включаем только когда есть реальный внешний контекст: retrieval, LSP-related или recent edits.
-    const useRepoContext = Boolean(repoTokens) && (normalizedNeighbors.length > 0 || normalizedRelatedFiles.length > 0 || editSnippets.length > 0);
-    const prompt = useRepoContext && repoTokens
-        ? renderRepoPrompt(
-            repoTokens.repoNameToken,
-            repoTokens.fileToken,
-            input.repoName,
-            input.filePath,
-            normalizedNeighbors,
-            normalizedRelatedFiles,
-            editSnippets,
-            fim,
-        )
-        : fim;
+    const prompt = buildPromptText(input, spec, trimmed.prefix, trimmed.suffix, repoContext);
     return {
         prompt,
         stop: fimStopTokens(spec),
         maxTokens: fimMaxTokens(input.generationMode),
         llamaModel: spec.llamaModel,
     };
+}
+
+function prepareRepoContext(input: BuildFimPromptInput, spec: ReturnType<typeof getFimModelSpec>): PreparedRepoContext {
+    if (!spec.supportsRepoContext) {
+        return emptyRepoContext();
+    }
+    const neighbors = normalizeNeighbors(input.neighbors ?? []);
+    const relatedFiles = normalizeRelatedFiles(input.relatedFiles ?? []);
+    const editSnippets = buildRepoEditSnippets(input, spec);
+    return {
+        neighbors,
+        relatedFiles,
+        editSnippets,
+        reservedChars: countReservedChars(neighbors, relatedFiles, editSnippets),
+        useRepoContext: neighbors.length > 0 || relatedFiles.length > 0 || editSnippets.length > 0,
+    };
+}
+
+function buildRepoEditSnippets(input: BuildFimPromptInput, spec: ReturnType<typeof getFimModelSpec>): string[] {
+    const maxRecentEditSnippets = input.maxRecentEditSnippets ?? 3;
+    const recentEdits = input.recentEdits ?? [];
+    if (recentEdits.length === 0 || maxRecentEditSnippets <= 0) {
+        return [];
+    }
+    if (spec.repoFormat === 'comment') {
+        return buildGraniteEditSnippets(input.languageId ?? '', recentEdits, maxRecentEditSnippets);
+    }
+    if (hasTokenRepoSlots(spec)) {
+        return buildEditHistorySnippets(spec.fileToken, recentEdits, maxRecentEditSnippets);
+    }
+    return [];
+}
+
+function buildPromptText(
+    input: BuildFimPromptInput,
+    spec: ReturnType<typeof getFimModelSpec>,
+    prefix: string,
+    suffix: string,
+    repoContext: PreparedRepoContext,
+): string {
+    if (!repoContext.useRepoContext) {
+        return renderFileLevelFim(spec.tokens, prefix, suffix);
+    }
+    if (spec.repoFormat === 'comment') {
+        return renderGranitePrompt({
+            languageId: input.languageId ?? '',
+            filePath: input.filePath,
+            prefix,
+            suffix,
+            neighbors: repoContext.neighbors,
+            relatedFiles: repoContext.relatedFiles,
+            editSnippets: repoContext.editSnippets,
+            tokens: spec.tokens,
+        });
+    }
+    if (hasTokenRepoSlots(spec)) {
+        return renderRepoPrompt(
+            spec.repoNameToken,
+            spec.fileToken,
+            input.repoName,
+            input.filePath,
+            repoContext.neighbors,
+            repoContext.relatedFiles,
+            repoContext.editSnippets,
+            renderFileLevelFim(spec.tokens, prefix, suffix),
+        );
+    }
+    return renderFileLevelFim(spec.tokens, prefix, suffix);
 }
 
 function normalizeNeighbors(neighbors: Neighbor[]): Neighbor[] {
@@ -83,6 +137,30 @@ function normalizeRelatedFiles(files: FimRelatedFile[]): FimRelatedFile[] {
         ...file,
         content: normalizeCrlf(file.content),
     }));
+}
+
+function renderFileLevelFim(tokens: { prefix: string; suffix: string; middle: string }, prefix: string, suffix: string): string {
+    return `${tokens.prefix}${prefix}${tokens.suffix}${suffix}${tokens.middle}`;
+}
+
+function hasTokenRepoSlots(spec: ReturnType<typeof getFimModelSpec>): spec is ReturnType<typeof getFimModelSpec> & { repoNameToken: string; fileToken: string } {
+    return Boolean(spec.repoNameToken && spec.fileToken);
+}
+
+function countReservedChars(neighbors: Neighbor[], relatedFiles: FimRelatedFile[], editSnippets: string[]): number {
+    return neighbors.reduce((sum, neighbor) => sum + neighbor.text.length + neighbor.filePath.length + 8, 0)
+        + relatedFiles.reduce((sum, file) => sum + file.content.length + file.filePath.length + 8, 0)
+        + editSnippets.reduce((sum, snippet) => sum + snippet.length, 0);
+}
+
+function emptyRepoContext(): PreparedRepoContext {
+    return {
+        neighbors: [],
+        relatedFiles: [],
+        editSnippets: [],
+        reservedChars: 0,
+        useRepoContext: false,
+    };
 }
 
 function renderRepoPrompt(

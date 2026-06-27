@@ -12,6 +12,7 @@ export interface FimModelSpec {
     templateId: FimTemplateId;
     llamaModel: string;
     supportsRepoContext: boolean;
+    repoFormat?: 'file-sep' | 'comment';
     tokens: FimTokenSet;
     repoNameToken?: string;
     fileToken?: string;
@@ -44,6 +45,7 @@ const SPECS: Record<FimModelId, FimModelSpec> = {
         templateId: 'qwen',
         llamaModel: 'qwen2.5-coder',
         supportsRepoContext: true,
+        repoFormat: 'file-sep',
         tokens: QWEN_TOKENS,
         repoNameToken: '<|repo_name|>',
         fileToken: '<|file_sep|>',
@@ -53,6 +55,7 @@ const SPECS: Record<FimModelId, FimModelSpec> = {
         templateId: 'qwen',
         llamaModel: 'omnicoder',
         supportsRepoContext: true,
+        repoFormat: 'file-sep',
         tokens: QWEN_TOKENS,
         repoNameToken: '<|repo_name|>',
         fileToken: '<|file_sep|>',
@@ -69,18 +72,16 @@ const SPECS: Record<FimModelId, FimModelSpec> = {
         templateId: 'granite',
         llamaModel: 'granite-4.1-8b',
         supportsRepoContext: true,
+        repoFormat: 'comment',
         tokens: GRANITE_TOKENS,
-        repoNameToken: '<|reponame|>',
-        fileToken: '<|filename|>',
     },
     'granite-4.1-3b': {
         modelId: 'granite-4.1-3b',
         templateId: 'granite',
         llamaModel: 'granite-4.1-3b',
         supportsRepoContext: true,
+        repoFormat: 'comment',
         tokens: GRANITE_TOKENS,
-        repoNameToken: '<|reponame|>',
-        fileToken: '<|filename|>',
     },
 };
 

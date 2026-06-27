@@ -110,6 +110,7 @@ export class FimBackendServiceImpl implements FimBackendService {
             });
             const prompt = buildFimPrompt({
                 modelId: this.config.modelId,
+                languageId: request.languageId,
                 fileMode: request.fileMode,
                 prefix,
                 suffix,

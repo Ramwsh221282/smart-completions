@@ -48,9 +48,10 @@ test('deepseek prompt keeps only native FIM slots', () => {
     assert.equal(built.maxTokens, 48);
 });
 
-test('granite prompt uses granite repo tokens when neighbors are present', () => {
+test('granite prompt stuffs repo context into the FIM prefix with language comments', () => {
     const built = buildFimPrompt({
         modelId: 'granite-4.1-3b',
+        languageId: 'typescript',
         fileMode: 'prose',
         prefix: 'Hello ',
         suffix: ' world',
@@ -61,8 +62,10 @@ test('granite prompt uses granite repo tokens when neighbors are present', () =>
         neighbors: [neighbor],
     });
 
-    assert.ok(built.prompt.startsWith('<|reponame|>repo\n<|filename|>src/neighbor.ts'));
-    assert.ok(built.prompt.includes('<|filename|>notes.md\n<|fim_prefix|>Hello <|fim_suffix|> world<|fim_middle|>'));
+    assert.ok(built.prompt.startsWith('<|fim_prefix|>// src/neighbor.ts\nexport function neighbor()'));
+    assert.ok(built.prompt.includes('// notes.md\nHello <|fim_suffix|> world<|fim_middle|>'));
+    assert.ok(!built.prompt.includes('<|reponame|>'));
+    assert.ok(!built.prompt.includes('<|filename|>'));
     assert.equal(built.maxTokens, 384);
 });
 
@@ -81,7 +84,7 @@ test('granite without neighbors falls back to file-level FIM (no fabricated repo
 
     assert.equal(built.prompt, '<|fim_prefix|>const x = <|fim_suffix|>;<|fim_middle|>');
     assert.ok(!built.prompt.includes('<|reponame|>'));
-    assert.ok(!built.prompt.includes('<|filename|>'));
+    assert.ok(!built.prompt.includes('// src/current.ts'));
 });
 
 test('qwen without neighbors falls back to file-level FIM', () => {

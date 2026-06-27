@@ -19,6 +19,7 @@ const REPO_PATH = process.env.SC_REPO_PATH ?? '';
 const EMBED_URL = process.env.SC_EMBED_URL ?? 'http://127.0.0.1:8090/v1';
 const FIM_URL = process.env.SC_FIM_URL ?? 'http://127.0.0.1:8080/v1';
 const FIM_MODEL = (process.env.SC_FIM_MODEL ?? 'granite-4.1-8b') as FimModelId;
+const GRANITE_EMBED_MODEL = 'Qwen3-Embedding-0.6B';
 
 const FIM_TOKENS = /<\|(fim_prefix|fim_suffix|fim_middle|fim_pad|repo_name|file_sep|filename|reponame|endoftext|end_of_text)\|>/;
 const CODE_FENCE = /```/;
@@ -64,7 +65,7 @@ test(
         const probe = await fetch(`${EMBED_URL.replace(/\/$/, '')}/embeddings`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: 'granite-embedding', input: ['ping'] }),
+            body: JSON.stringify({ model: GRANITE_EMBED_MODEL, input: ['ping'] }),
         });
         assert.ok(probe.ok, `embedding endpoint not OK: ${probe.status}`);
         const probeJson = (await probe.json()) as { data?: Array<{ embedding: number[] }> };
@@ -86,7 +87,7 @@ test(
             assert.ok(ready, 'chroma server became ready');
 
             const config: EmbeddingConfig = {
-                embedModel: 'granite',
+                embedModel: GRANITE_EMBED_MODEL,
                 llamaUrl: EMBED_URL,
                 vectorDb: 'chromadb',
                 chromaUrl: `http://127.0.0.1:${port}`,
@@ -145,6 +146,7 @@ test(
 
             const prompt = buildFimPrompt({
                 modelId: FIM_MODEL,
+                languageId: 'typescript',
                 fileMode: 'code',
                 prefix: fimPrefixTail,
                 suffix: '\n}',
@@ -154,7 +156,9 @@ test(
                 filePath: 'src/node/fim-module/context-formation/builder.ts',
                 neighbors: ragNeighbors,
             });
-            assert.ok(prompt.prompt.includes('<|reponame|>'), 'repo-format used because real neighbors are present');
+            assert.ok(prompt.prompt.includes('// src/node/fim-module/context-formation/builder.ts\n'), 'current file block stays inside the stuffed prefix');
+            assert.ok(!prompt.prompt.includes('<|reponame|>'), 'granite repo context no longer relies on undocumented repo tokens');
+            assert.ok(!prompt.prompt.includes('<|filename|>'), 'granite repo context no longer relies on undocumented file tokens');
 
             const fimClient = new LlamaFimClient();
             const raw = await fimClient.complete({

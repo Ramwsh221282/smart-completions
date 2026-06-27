@@ -3,7 +3,7 @@ import { PreferenceService } from '@theia/core/lib/common/preferences/preference
 import { EmbeddingConfig } from '../../common/embedding-types';
 import { FimConfig } from '../../common/fim-types';
 import { DEFAULT_DIAGNOSTICS_GATE_CONFIG, NesConfig } from '../../common/nes-types';
-import { EmbedModelId, FimModelId, GenerationMode, NesModelId, VectorDbId } from '../../common/model-types';
+import { EmbedModelId, FimModelId, GenerationMode, NesModelId, VectorDbId, isGraniteFimModel } from '../../common/model-types';
 import { SweepProfileId, getSweepProfile, sweepProfileIdForModel, sweepRequestModelName } from '../../common/sweep/profiles';
 import { DEFAULT_SWEEP_FUZZY_CONFIG, DEFAULT_SWEEP_GRAPH_CONFIG, DEFAULT_SWEEP_RERANK_CONFIG } from '../../common/sweep/types';
 import type { ZetaConfig } from '../../common/zeta21/types';
@@ -358,6 +358,7 @@ export function readFimConfig(preferences: PreferenceService): FimConfig {
     const modelId = preferences.get<FimModelId>('smart-completions.fim.modelId', 'qwen2.5-coder');
     const configuredContextSize = preferences.get<number>('smart-completions.fim.contextSize', 0);
     const embedding = readEmbeddingConfig(preferences);
+    const configuredFimEmbedderId = preferences.get<string>('smart-completions.fim.fimEmbedderId', 'jina-code');
     return {
         modelId,
         llamaUrl: preferences.get<string>('smart-completions.fim.llamaUrl', 'http://127.0.0.1:8020/v1'),
@@ -366,7 +367,7 @@ export function readFimConfig(preferences: PreferenceService): FimConfig {
         generationMode: preferences.get<GenerationMode>('smart-completions.fim.generationMode', 'multiline'),
         temperature: preferences.get<number>('smart-completions.fim.temperature', 0.05),
         ragEnabled: preferences.get<boolean>('smart-completions.fim.ragEnabled', true),
-        fimEmbedderId: preferences.get<string>('smart-completions.fim.fimEmbedderId', 'jina-code'),
+        fimEmbedderId: isGraniteFimModel(modelId) ? 'qwen3-0.6b' : configuredFimEmbedderId,
         embedding,
         retrieval: {
             rerank: {
