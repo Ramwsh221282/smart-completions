@@ -24,10 +24,6 @@ export const SEED_MODULE: FimModelModule = {
         }
         return 256;
     },
-    verifySpecialTokens: async (llamaUrl, signal) => {
-        const { verifySeedSpecialTokens } = await import('../../node/seedcoder/seed-token-healthcheck.js');
-        return verifySeedSpecialTokens(llamaUrl, signal);
-    },
 };
 
 function renderPrompt(input: FimPromptRenderInput): string {

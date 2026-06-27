@@ -11,7 +11,7 @@ import { LlamaFimClient } from '../src/node/fim-module/model-call/llama-fim-clie
 import { postprocessFimCompletion } from '../src/node/fim-module/model-call/postprocess';
 import type { RetrievalChannel } from '../src/node/fim-module/retrieval/fim-retrieval-channel';
 import { FimRetrievalOrchestrator } from '../src/node/fim-module/retrieval/fim-retrieval-orchestrator';
-import { verifySeedSpecialTokens } from '../src/node/seedcoder/seed-token-healthcheck';
+import { SEED_NODE_MODULE } from '../src/node/seedcoder/seed-node-module';
 import { resetSeedLanceDb } from './helpers/seed-lancedb-reset';
 
 const ENABLED = process.env.SC_BATTLE_IT === '1';
@@ -70,7 +70,7 @@ test(
         assert.ok(fs.existsSync(REPO), `SC_BATTLE_REPO does not exist: ${REPO}`);
         assert.ok(service, 'beforeEach created a fresh Seed embedding index');
         const reportFile = path.join(process.cwd(), 'test_results', `seed-battlefield-${Date.now()}.md`);
-        const specialTokensOk = await verifySeedSpecialTokens(SEED_URL);
+        const specialTokensOk = await SEED_NODE_MODULE.verifySpecialTokens(SEED_URL);
         assert.equal(specialTokensOk, true, 'seed GGUF must preserve FIM special tokens');
         const orchestrator = new FimRetrievalOrchestrator([createSemanticChannel(service)]);
         const startedAt = Date.now();

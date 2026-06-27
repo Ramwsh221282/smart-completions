@@ -12,7 +12,7 @@ import { LlamaFimClient } from '../src/node/fim-module/model-call/llama-fim-clie
 import { postprocessFimCompletion } from '../src/node/fim-module/model-call/postprocess';
 import type { RetrievalChannel } from '../src/node/fim-module/retrieval/fim-retrieval-channel';
 import { FimRetrievalOrchestrator } from '../src/node/fim-module/retrieval/fim-retrieval-orchestrator';
-import { verifyAixcoderSpecialTokens } from '../src/node/aixcoder/aixcoder-token-healthcheck';
+import { AIXCODER_NODE_MODULE } from '../src/node/aixcoder/aixcoder-node-module';
 import { resetAixcoderLanceDb } from './helpers/aixcoder-lancedb-reset';
 
 const ENABLED = process.env.SC_BATTLE_IT === '1';
@@ -70,7 +70,7 @@ test(
     async () => {
         assert.ok(fs.existsSync(REPO), `SC_BATTLE_REPO does not exist: ${REPO}`);
         assert.ok(service, 'beforeEach created a fresh aiXcoder embedding index');
-        assert.equal(await verifyAixcoderSpecialTokens(FIM_URL), true);
+        assert.equal(await AIXCODER_NODE_MODULE.verifySpecialTokens(FIM_URL), true);
 
         const orchestrator = new FimRetrievalOrchestrator([createSemanticChannel(service)]);
         const neighbors = await orchestrator.retrieve({

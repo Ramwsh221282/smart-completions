@@ -2,7 +2,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { injectable, inject } from '@theia/core/shared/inversify';
 import { CancellationToken, Disposable } from '@theia/core/lib/common';
-import { getFimModule } from '../../common/fim/fim-model-registry';
+import { getFimNodeModule } from '../fim-module/fim-node-registry';
 import { buildFimRetrievalQuery, extractFimSignals } from '../../common/fim/fim-retrieval-queries';
 import { FimBackendService } from '../../common/protocol';
 import { FimConfig, FimRequest, FimResponse } from '../../common/fim-types';
@@ -214,13 +214,10 @@ export class FimBackendServiceImpl implements FimBackendService {
     }
 
     private async ensureSpecialTokens(): Promise<void> {
-        const module = getFimModule(this.config.modelId);
-        if (!module.verifySpecialTokens) {
-            return;
-        }
-        const tokensOk = await module.verifySpecialTokens(this.config.llamaUrl);
-        if (!tokensOk) {
-            throw new Error(`${module.modelId}: GGUF does not preserve special tokens`);
+        const nodeModule = getFimNodeModule(this.config.modelId);
+        const ok = await nodeModule.verifySpecialTokens(this.config.llamaUrl);
+        if (!ok) {
+            throw new Error(`${nodeModule.modelId}: GGUF does not preserve special tokens`);
         }
     }
 

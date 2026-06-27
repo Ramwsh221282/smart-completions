@@ -17,7 +17,6 @@ export const GRANITE_8B_MODULE: FimModelModule = {
     buildEditSnippets: (languageId, recentEdits, maxEdits) => buildGraniteEditSnippets(languageId, recentEdits, maxEdits),
     countReservedChars: input => countReservedChars(input),
     maxTokensForMode: generationMode => maxTokensForMode(generationMode),
-    verifySpecialTokens: null,
 };
 
 export const GRANITE_3B_MODULE: FimModelModule = {

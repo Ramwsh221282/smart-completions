@@ -32,10 +32,6 @@ export const AIXCODER_MODULE: FimModelModule = {
         }
         return 256;
     },
-    verifySpecialTokens: async (llamaUrl, signal) => {
-        const { verifyAixcoderSpecialTokens } = await import('../../node/aixcoder/aixcoder-token-healthcheck.js');
-        return verifyAixcoderSpecialTokens(llamaUrl, signal);
-    },
 };
 
 function countReservedChars(input: Parameters<FimModelModule['countReservedChars']>[0]): number {

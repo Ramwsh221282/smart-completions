@@ -22,5 +22,4 @@ export const DEEPSEEK_MODULE: FimModelModule = {
         }
         return 160;
     },
-    verifySpecialTokens: null,
 };

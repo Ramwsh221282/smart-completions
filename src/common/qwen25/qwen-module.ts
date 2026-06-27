@@ -22,7 +22,6 @@ export const QWEN_MODULE: FimModelModule = {
     },
     countReservedChars: input => countRepoReservedChars(input),
     maxTokensForMode: generationMode => maxTokensForMode(generationMode),
-    verifySpecialTokens: null,
 };
 
 export const OMNICODER_MODULE: FimModelModule = {

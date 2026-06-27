@@ -4,7 +4,7 @@ import type { Neighbor } from '../src/common/embedding-types';
 import { buildFimPrompt } from '../src/node/fim-module/context-formation/builder';
 import { LlamaFimClient } from '../src/node/fim-module/model-call/llama-fim-client';
 import { postprocessFimCompletion } from '../src/node/fim-module/model-call/postprocess';
-import { verifyAixcoderSpecialTokens } from '../src/node/aixcoder/aixcoder-token-healthcheck';
+import { AIXCODER_NODE_MODULE } from '../src/node/aixcoder/aixcoder-node-module';
 
 const ENABLED = process.env.SC_AIX_IT === '1';
 const BASE_URL = process.env.SC_AIX_URL ?? process.env.SC_FIM_URL ?? 'http://127.0.0.1:8020/v1';
@@ -40,7 +40,7 @@ test(
     'aiXcoder live: GGUF preserves AIX-SPAN special tokens',
     { skip: !ENABLED && 'set SC_AIX_IT=1 to run', timeout: 120000 },
     async () => {
-        assert.equal(await verifyAixcoderSpecialTokens(BASE_URL), true);
+        assert.equal(await AIXCODER_NODE_MODULE.verifySpecialTokens(BASE_URL), true);
     },
 );
 

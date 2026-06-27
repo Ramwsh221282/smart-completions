@@ -4,7 +4,7 @@ import type { Neighbor } from '../src/common/embedding-types';
 import { buildFimPrompt } from '../src/node/fim-module/context-formation/builder';
 import { LlamaFimClient } from '../src/node/fim-module/model-call/llama-fim-client';
 import { postprocessFimCompletion } from '../src/node/fim-module/model-call/postprocess';
-import { verifySeedSpecialTokens } from '../src/node/seedcoder/seed-token-healthcheck';
+import { SEED_NODE_MODULE } from '../src/node/seedcoder/seed-node-module';
 
 const ENABLED = process.env.SC_SEED_IT === '1';
 const BASE_URL = process.env.SC_SEED_URL ?? 'http://127.0.0.1:8020/v1';
@@ -40,7 +40,7 @@ test(
     'Seed live: GGUF preserves FIM special tokens',
     { skip: !ENABLED && 'set SC_SEED_IT=1 to run', timeout: 120000 },
     async () => {
-        const ok = await verifySeedSpecialTokens(BASE_URL);
+        const ok = await SEED_NODE_MODULE.verifySpecialTokens(BASE_URL);
         assert.equal(ok, true);
     },
 );

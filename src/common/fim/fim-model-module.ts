@@ -37,5 +37,4 @@ export interface FimModelModule {
     buildEditSnippets(languageId: string, recentEdits: RecentEdit[], maxEdits: number): string[];
     countReservedChars(input: FimPromptRenderInput): number;
     maxTokensForMode(generationMode: GenerationMode): number;
-    verifySpecialTokens: ((llamaUrl: string, signal?: AbortSignal) => Promise<boolean>) | null;
 }
