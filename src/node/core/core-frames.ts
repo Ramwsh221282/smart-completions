@@ -28,7 +28,7 @@ export function decodeFrames(buffer: Buffer): DecodedFrames {
 }
 
 /** Server frame kinds the client understands. */
-export type ServerFrameKind = 'Token' | 'Done' | 'Error' | 'Edit';
+export type ServerFrameKind = 'Token' | 'Done' | 'Error' | 'Progress' | 'Edit';
 
 /** Normalized view of a server frame keyed by request id. */
 export interface InterpretedFrame {
@@ -70,6 +70,8 @@ function interpretDecodedFrame(frame: InterpretedFrame): InterpretedFrame | unde
             return { kind: frame.kind, requestId: frame.requestId };
         case 'Error':
             return { kind: frame.kind, requestId: frame.requestId, message: frame.message ?? '' };
+        case 'Progress':
+            return { kind: frame.kind, requestId: frame.requestId, text: frame.text ?? '' };
         case 'Edit':
             return {
                 kind: frame.kind,

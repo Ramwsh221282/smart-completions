@@ -5,26 +5,33 @@ use std::path::{Path, PathBuf};
 
 use core_dispatch::CancellationRegistry;
 use core_documents::{
-    CoreDocumentStore, CurrentDocumentWindow, DocumentContentChange, InitialDocumentSnapshot,
-    SweepOriginalContext, SweepWindowLayout,
+    CoreDocumentStore, DocumentContentChange, InitialDocumentSnapshot, SweepOriginalContext,
+    SweepWindowLayout,
 };
 use core_edit_history::RecentEdit;
 use core_ipc::{
-    ClientFrame, ServerFrame, WireCompletionRequest, WireDiagnostic, WireDiagnosticSeverity,
-    WireDocumentChange, WireInitialDocument, WireOutlineItem, WireRelatedFileHint, WireSignals,
-    WireTextChange,
+    ClientFrame, ServerFrame, WireCompletionRequest, WireConfigUpdate, WireDiagnostic,
+    WireDiagnosticSeverity, WireDocumentChange, WireInitialDocument, WireOutlineItem,
+    WireRelatedFileHint, WireSignals, WireTextChange,
 };
-use core_llama::GenerationClient;
+use core_llama::{looks_broken, GenerationClient, RerankClient};
 use core_models::{
     FimModelModule, FimModuleKind, FimRenderInput, GenerationMode, NesModelModule, NesModuleKind,
     NesRenderInput,
 };
+use core_retrieval::{
+    rrf_merge, ChannelInput, FuzzyFimChannel, FuzzyNesChannel, GraphChannel, RetrievalChannelKind,
+    RetrievalConfig, RetrievalDocument, SemanticChannel,
+};
 use core_types::{CompletionMode, Neighbor, Range};
+use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::completion::{spawn_fim_completion, spawn_nes_completion, FimCompletion, NesCompletion};
 
 const MAX_RELATED_HINT_NEIGHBORS: usize = 6;
+/// Upper bound on a single related-file read, guarding prompt budget and latency.
+const MAX_RELATED_FILE_BYTES: u64 = 256 * 1024;
 
 /// What the connection loop should do after one frame.
 pub enum HandleOutcome {
@@ -34,26 +41,36 @@ pub enum HandleOutcome {
     Shutdown,
 }
 
-/// Applies client frames to the shadow store and routes FIM completions.
+/// Applies client frames to the shadow store and routes FIM/NES completions.
 pub struct CoreFrameHandler {
     store: CoreDocumentStore,
     cancellation: CancellationRegistry,
-    generation: GenerationClient,
+    fim_generation: GenerationClient,
+    nes_generation: GenerationClient,
+    config: CoreConfigState,
 }
 
 impl CoreFrameHandler {
-    /// Creates a handler that routes FIM generation through `generation`.
+    /// Creates a handler routing FIM and NES generation to separate endpoints.
+    ///
+    /// FIM and NES run on distinct llama-server instances (different ports and
+    /// GPUs), so each gets its own client instead of sharing one.
     #[must_use]
-    pub fn new(generation: GenerationClient) -> Self {
+    pub fn new(fim_generation: GenerationClient, nes_generation: GenerationClient) -> Self {
         Self {
             store: CoreDocumentStore::new(),
             cancellation: CancellationRegistry::new(),
-            generation,
+            fim_generation,
+            nes_generation,
+            config: CoreConfigState::new(),
         }
     }
 
     /// Handles one client frame, emitting any server frames through `out`.
-    pub fn handle(
+    ///
+    /// Async because related-file context is read off the reactor via
+    /// `tokio::fs`; document sync and cancellation stay synchronous.
+    pub async fn handle(
         &mut self,
         frame: ClientFrame,
         out: &UnboundedSender<ServerFrame>,
@@ -68,14 +85,17 @@ impl CoreFrameHandler {
                 HandleOutcome::Continue
             }
             ClientFrame::CompletionRequest(request) => {
-                self.start_completion(&request, out);
+                self.start_completion(&request, out).await;
                 HandleOutcome::Continue
             }
             ClientFrame::Cancel(cancel) => {
                 self.cancellation.cancel(cancel.request_id);
                 HandleOutcome::Continue
             }
-            ClientFrame::ConfigUpdate(_) => HandleOutcome::Continue,
+            ClientFrame::ConfigUpdate(update) => {
+                self.config.apply(update);
+                HandleOutcome::Continue
+            }
             ClientFrame::Shutdown(_) => HandleOutcome::Shutdown,
         }
     }
@@ -101,18 +121,18 @@ impl CoreFrameHandler {
         }
     }
 
-    fn start_completion(
+    async fn start_completion(
         &mut self,
         request: &WireCompletionRequest,
         out: &UnboundedSender<ServerFrame>,
     ) {
         match request.mode {
-            CompletionMode::Fim => self.start_fim_completion(request, out),
-            CompletionMode::Nes => self.start_nes_completion(request, out),
+            CompletionMode::Fim => self.start_fim_completion(request, out).await,
+            CompletionMode::Nes => self.start_nes_completion(request, out).await,
         }
     }
 
-    fn start_fim_completion(
+    async fn start_fim_completion(
         &mut self,
         request: &WireCompletionRequest,
         out: &UnboundedSender<ServerFrame>,
@@ -122,7 +142,7 @@ impl CoreFrameHandler {
             return;
         };
 
-        let prompt = match self.build_fim_prompt(module, request) {
+        let prompt = match self.build_fim_prompt(module, request).await {
             Ok(prompt) => prompt,
             Err(message) => {
                 send_error(out, request.request_id, &message);
@@ -132,7 +152,7 @@ impl CoreFrameHandler {
 
         let cancel = self.cancellation.start(request.request_id);
         spawn_fim_completion(FimCompletion {
-            client: self.generation.clone(),
+            client: self.fim_generation.clone(),
             prompt,
             max_tokens: module.max_tokens(GenerationMode::Line),
             stop: module.stop_tokens(),
@@ -142,7 +162,7 @@ impl CoreFrameHandler {
         });
     }
 
-    fn start_nes_completion(
+    async fn start_nes_completion(
         &mut self,
         request: &WireCompletionRequest,
         out: &UnboundedSender<ServerFrame>,
@@ -152,7 +172,7 @@ impl CoreFrameHandler {
             return;
         };
 
-        let prepared = match self.build_nes_completion(module, request) {
+        let prepared = match self.build_nes_completion(module, request).await {
             Ok(prepared) => prepared,
             Err(message) => {
                 send_error(out, request.request_id, &message);
@@ -162,19 +182,20 @@ impl CoreFrameHandler {
 
         let cancel = self.cancellation.start(request.request_id);
         spawn_nes_completion(NesCompletion {
-            client: self.generation.clone(),
+            client: self.nes_generation.clone(),
             prompt: prepared.prompt,
             max_tokens: prepared.max_tokens,
             stop: prepared.stop,
             cancel,
             out: out.clone(),
             request_id: request.request_id,
-            module,
-            range: prepared.range,
+            current_window_text: prepared.current_window_text,
+            window_start_line: prepared.window_start_line,
+            cursor_byte_offset: prepared.cursor_byte_offset,
         });
     }
 
-    fn build_fim_prompt(
+    async fn build_fim_prompt(
         &self,
         module: FimModuleKind,
         request: &WireCompletionRequest,
@@ -185,7 +206,7 @@ impl CoreFrameHandler {
             .map_err(|err| err.to_string())?;
         // Metadata rides through the existing repo-context channel, so the
         // model sees it now without waiting for a dedicated retrieval stage.
-        let neighbors = self.prompt_context_neighbors(request);
+        let neighbors = self.prompt_context_neighbors(request).await;
         let file_path = self.current_file_path(request)?;
 
         let input = FimRenderInput {
@@ -199,13 +220,15 @@ impl CoreFrameHandler {
         Ok(module.render_prompt(&input))
     }
 
-    fn build_nes_completion(
+    async fn build_nes_completion(
         &self,
         module: NesModuleKind,
         request: &WireCompletionRequest,
     ) -> Result<PreparedNesCompletion, String> {
+        // Neighbors are loaded first so the store borrow in `sweep_snapshot`
+        // is never held across the `tokio::fs` await points.
+        let neighbors = self.prompt_context_neighbors(request).await;
         let snapshot = self.sweep_snapshot(request)?;
-        let neighbors = self.prompt_context_neighbors(request);
         let file_path = self.current_file_path(request)?;
 
         let input = NesRenderInput {
@@ -224,7 +247,9 @@ impl CoreFrameHandler {
             prompt: module.render_prompt(&input),
             max_tokens: sweep_max_tokens(&request.model_id),
             stop: module.stop_tokens(),
-            range: replacement_range(&snapshot.current),
+            current_window_text: snapshot.current.text.to_owned(),
+            window_start_line: snapshot.current.start_line,
+            cursor_byte_offset: snapshot.current.cursor_byte_offset,
         })
     }
 
@@ -261,7 +286,232 @@ struct PreparedNesCompletion {
     prompt: String,
     max_tokens: u32,
     stop: &'static [&'static str],
-    range: Range,
+    current_window_text: String,
+    window_start_line: usize,
+    cursor_byte_offset: usize,
+}
+
+struct CoreConfigState {
+    version: u64,
+    config_json: String,
+}
+
+impl CoreConfigState {
+    fn new() -> Self {
+        Self {
+            version: 0,
+            config_json: String::new(),
+        }
+    }
+
+    // Monotonic by version so a late, out-of-order frame cannot roll config back.
+    fn apply(&mut self, update: WireConfigUpdate) {
+        if update.config_version < self.version {
+            return;
+        }
+        self.version = update.config_version;
+        self.config_json = update.config_json;
+    }
+
+    fn runtime_config_for(&self, request: &WireCompletionRequest) -> RuntimeRequestConfig {
+        let request_value = request.config_json.as_deref().and_then(parse_json_value);
+        let stored_value = if request_value.is_none() {
+            parse_json_value(&self.config_json)
+        } else {
+            None
+        };
+        RuntimeRequestConfig::from_json(
+            request.mode,
+            request.model_id.as_str(),
+            request_value.or(stored_value),
+        )
+    }
+}
+
+#[derive(Clone)]
+struct RuntimeRequestConfig {
+    retrieval: RetrievalConfig,
+    top_n: usize,
+    rerank: RuntimeRerankConfig,
+}
+
+#[derive(Clone)]
+struct RuntimeRerankConfig {
+    enabled: bool,
+    endpoint: String,
+    instruction: String,
+    candidate_pool_n: usize,
+    rerank_top_n: usize,
+    final_top_n: usize,
+    max_doc_chars: usize,
+}
+
+impl RuntimeRequestConfig {
+    fn from_json(mode: CompletionMode, model_id: &str, value: Option<Value>) -> Self {
+        let defaults = default_runtime_config(mode, model_id);
+        let Some(value) = value else {
+            return defaults;
+        };
+
+        let section = request_mode_section(&value, mode);
+        let retrieval_section = section.and_then(|section| section.get("retrieval"));
+        let rerank_section = retrieval_section.and_then(|section| section.get("rerank"));
+
+        Self {
+            retrieval: RetrievalConfig {
+                semantic_enabled: true,
+                graph_enabled: bool_at_paths(
+                    retrieval_section,
+                    &[&["graph", "enabled"]],
+                    defaults.retrieval.graph_enabled,
+                ),
+                fuzzy_enabled: bool_at_paths(
+                    retrieval_section,
+                    &[&["fuzzy", "enabled"]],
+                    defaults.retrieval.fuzzy_enabled,
+                ),
+            },
+            top_n: usize_at_paths(section, &[&["relatedTopN"]], defaults.top_n),
+            rerank: RuntimeRerankConfig {
+                enabled: bool_at_paths(rerank_section, &[&["enabled"]], defaults.rerank.enabled),
+                endpoint: normalize_rerank_endpoint(string_at_paths(
+                    rerank_section,
+                    &[&["llamaUrl"]],
+                    &defaults.rerank.endpoint,
+                )),
+                instruction: string_at_paths(
+                    rerank_section,
+                    &[&["instruction"]],
+                    &defaults.rerank.instruction,
+                ),
+                candidate_pool_n: usize_at_paths(
+                    rerank_section,
+                    &[&["candidatePoolN"]],
+                    defaults.rerank.candidate_pool_n,
+                ),
+                rerank_top_n: usize_at_paths(
+                    rerank_section,
+                    &[&["rerankTopN"]],
+                    defaults.rerank.rerank_top_n,
+                ),
+                final_top_n: usize_at_paths(
+                    rerank_section,
+                    &[&["finalTopN"]],
+                    defaults.rerank.final_top_n,
+                ),
+                max_doc_chars: usize_at_paths(
+                    rerank_section,
+                    &[&["maxDocChars"]],
+                    defaults.rerank.max_doc_chars,
+                ),
+            },
+        }
+    }
+}
+
+fn default_runtime_config(mode: CompletionMode, _model_id: &str) -> RuntimeRequestConfig {
+    match mode {
+        CompletionMode::Fim => RuntimeRequestConfig {
+            retrieval: RetrievalConfig {
+                semantic_enabled: true,
+                graph_enabled: true,
+                fuzzy_enabled: true,
+            },
+            top_n: 5,
+            rerank: RuntimeRerankConfig {
+                enabled: true,
+                endpoint: "http://127.0.0.1:8030/v1/rerank".to_owned(),
+                instruction: "Instruct: Given the current incomplete code prefix and recent edits, judge whether the repository snippet is useful for predicting the missing code at the cursor.".to_owned(),
+                candidate_pool_n: 16,
+                rerank_top_n: 16,
+                final_top_n: 5,
+                max_doc_chars: 2000,
+            },
+        },
+        CompletionMode::Nes => RuntimeRequestConfig {
+            retrieval: RetrievalConfig {
+                semantic_enabled: true,
+                graph_enabled: true,
+                fuzzy_enabled: true,
+            },
+            top_n: 8,
+            rerank: RuntimeRerankConfig {
+                enabled: false,
+                endpoint: "http://127.0.0.1:8030/v1/rerank".to_owned(),
+                instruction: "Instruct: Given the current code edit and cursor context, judge whether the code snippet is useful for predicting the developer's next edit. Prefer snippets that define or call the symbols being edited.".to_owned(),
+                candidate_pool_n: 24,
+                rerank_top_n: 16,
+                final_top_n: 8,
+                max_doc_chars: 2000,
+            },
+        },
+    }
+}
+
+fn request_mode_section(value: &Value, mode: CompletionMode) -> Option<&Value> {
+    match mode {
+        CompletionMode::Fim => value.get("fim"),
+        CompletionMode::Nes => value.get("nes"),
+    }
+}
+
+fn parse_json_value(text: &str) -> Option<Value> {
+    if text.is_empty() {
+        return None;
+    }
+    serde_json::from_str(text).ok()
+}
+
+fn bool_at_paths(value: Option<&Value>, paths: &[&[&str]], default: bool) -> bool {
+    paths
+        .iter()
+        .find_map(|path| {
+            value
+                .and_then(|value| value.pointer(&json_pointer(path)))
+                .and_then(Value::as_bool)
+        })
+        .unwrap_or(default)
+}
+
+fn usize_at_paths(value: Option<&Value>, paths: &[&[&str]], default: usize) -> usize {
+    paths
+        .iter()
+        .find_map(|path| {
+            value
+                .and_then(|value| value.pointer(&json_pointer(path)))
+                .and_then(Value::as_u64)
+        })
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(default)
+}
+
+fn string_at_paths(value: Option<&Value>, paths: &[&[&str]], default: &str) -> String {
+    paths
+        .iter()
+        .find_map(|path| {
+            value
+                .and_then(|value| value.pointer(&json_pointer(path)))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or(default)
+        .to_owned()
+}
+
+fn normalize_rerank_endpoint(value: String) -> String {
+    if value.ends_with("/rerank") {
+        return value;
+    }
+    let trimmed = value.trim_end_matches('/');
+    format!("{trimmed}/rerank")
+}
+
+fn json_pointer(path: &[&str]) -> String {
+    let mut pointer = String::new();
+    for part in path {
+        pointer.push('/');
+        pointer.push_str(part);
+    }
+    pointer
 }
 
 fn sweep_window_layout(model_id: &str) -> SweepWindowLayout {
@@ -281,27 +531,6 @@ fn sweep_window_layout(model_id: &str) -> SweepWindowLayout {
 
 fn sweep_max_tokens(_model_id: &str) -> u32 {
     768
-}
-
-fn replacement_range(window: &CurrentDocumentWindow<'_>) -> Range {
-    let end_line = window.start_line + window.line_count - 1;
-    Range {
-        start_line: i32::try_from(window.start_line).unwrap_or(i32::MAX),
-        start_col: 0,
-        end_line: i32::try_from(end_line).unwrap_or(i32::MAX),
-        end_col: last_line_utf16_len(window.text),
-    }
-}
-
-fn last_line_utf16_len(text: &str) -> i32 {
-    let last_line = text.rsplit_once('\n').map_or(text, |(_, tail)| tail);
-    utf16_len(last_line)
-}
-
-fn utf16_len(text: &str) -> i32 {
-    text.chars()
-        .map(|ch| i32::try_from(ch.len_utf16()).unwrap_or(0))
-        .sum()
 }
 
 fn recent_edits_from_wire(edits: &[core_ipc::WireRecentEdit]) -> Vec<RecentEdit> {
@@ -344,11 +573,139 @@ fn to_content_changes(changes: Vec<WireTextChange>) -> Vec<DocumentContentChange
         .collect()
 }
 
+async fn retrieve_neighbors(input: &ChannelInput, runtime: RuntimeRequestConfig) -> Vec<Neighbor> {
+    let channels = [
+        RetrievalChannelKind::Semantic(SemanticChannel),
+        RetrievalChannelKind::Graph(GraphChannel),
+        RetrievalChannelKind::FuzzyFim(FuzzyFimChannel),
+        RetrievalChannelKind::FuzzyNes(FuzzyNesChannel),
+    ];
+
+    let mut lists = Vec::with_capacity(channels.len());
+    let pool_n = runtime.rerank.candidate_pool_n.max(runtime.top_n).max(1);
+    for channel in channels {
+        if channel.code_only() && !input.file_mode_is_code {
+            continue;
+        }
+        if !channel.is_enabled(runtime.retrieval) {
+            continue;
+        }
+        lists.push(channel.retrieve(input, pool_n));
+    }
+
+    let merged = rrf_merge(&lists, pool_n);
+    rerank_neighbors(merged, &input.query_text, runtime.rerank).await
+}
+
+async fn rerank_neighbors(
+    merged: Vec<Neighbor>,
+    query_text: &str,
+    rerank: RuntimeRerankConfig,
+) -> Vec<Neighbor> {
+    let final_top_n = rerank.final_top_n.max(1);
+    if !rerank.enabled {
+        return merged.into_iter().take(final_top_n).collect();
+    }
+
+    let candidate_count = merged.len().min(rerank.rerank_top_n.max(final_top_n));
+    let candidates = &merged[..candidate_count];
+    let documents = candidates
+        .iter()
+        .map(|neighbor| clip_utf8_prefix(&neighbor.text, rerank.max_doc_chars))
+        .collect::<Vec<_>>();
+    let query = format!("{}\nQuery: {}", rerank.instruction, query_text);
+    let reranker = RerankClient::new(rerank.endpoint);
+    let ranked = match reranker.rerank(&query, &documents, documents.len()).await {
+        Ok(ranked) if !looks_broken(&ranked) => ranked,
+        _ => return merged.into_iter().take(final_top_n).collect(),
+    };
+
+    let mut selected = Vec::with_capacity(final_top_n);
+    let mut used = std::collections::HashSet::with_capacity(ranked.len());
+    for item in ranked {
+        if item.index >= candidates.len() || !used.insert(item.index) {
+            continue;
+        }
+        let mut neighbor = candidates[item.index].clone();
+        neighbor.score = item.relevance_score;
+        selected.push(neighbor);
+        if selected.len() >= final_top_n {
+            break;
+        }
+    }
+    if selected.len() < final_top_n {
+        for neighbor in merged {
+            if selected
+                .iter()
+                .any(|selected_neighbor| selected_neighbor.id == neighbor.id)
+            {
+                continue;
+            }
+            selected.push(neighbor);
+            if selected.len() >= final_top_n {
+                break;
+            }
+        }
+    }
+    selected
+}
+
+fn retrieval_query_text(request: &WireCompletionRequest) -> String {
+    let mut parts = Vec::new();
+    if let Some(signals) = request.signals.as_ref() {
+        if let Some(symbol) = signals.symbol_at_cursor.as_ref() {
+            if !symbol.is_empty() {
+                parts.push(symbol.clone());
+            }
+        }
+        append_signal_values(&mut parts, &signals.renamed_symbols);
+        append_signal_values(&mut parts, &signals.imported_symbols);
+        append_signal_values(&mut parts, &signals.declared_types);
+        append_signal_values(&mut parts, &signals.test_names);
+        append_signal_values(&mut parts, &signals.diagnostic_symbols);
+        append_signal_values(&mut parts, &signals.fuzzy_symbols);
+        append_signal_values(&mut parts, &signals.retrieval_signal_hints);
+    }
+    if parts.is_empty() {
+        for diagnostic in &request.diagnostics {
+            parts.push(diagnostic.message.clone());
+        }
+    }
+    parts.join("\n")
+}
+
+fn append_signal_values(out: &mut Vec<String>, values: &[String]) {
+    for value in values {
+        if !value.is_empty() {
+            out.push(value.clone());
+        }
+    }
+}
+
 impl CoreFrameHandler {
-    // Related-file hints now resolve to real file contents before the prompt is
-    // rendered; the remaining metadata still flows through pseudo-files.
-    fn prompt_context_neighbors(&self, request: &WireCompletionRequest) -> Vec<Neighbor> {
-        let mut neighbors = self.related_hint_neighbors(request);
+    // Related-file hints and metadata pseudo-files are collected into a corpus,
+    // then ranked through the in-core retrieval channels and optional rerank.
+    async fn prompt_context_neighbors(&self, request: &WireCompletionRequest) -> Vec<Neighbor> {
+        let current_file_path = self
+            .current_file_path(request)
+            .unwrap_or_else(|_| request.uri.clone());
+        let runtime = self.config.runtime_config_for(request);
+        let documents = self.related_hint_documents(request).await;
+
+        let mut neighbors = if documents.is_empty() {
+            Vec::new()
+        } else {
+            let query_text = retrieval_query_text(request);
+            let input = ChannelInput {
+                query_text: query_text.clone(),
+                vector_text: query_text,
+                file_mode_is_code: request.file_mode == core_types::FileMode::Code,
+                current_file_path,
+                documents,
+                signal_terms: signal_terms(request.signals.as_ref()),
+            };
+            retrieve_neighbors(&input, runtime).await
+        };
 
         if let Some(neighbor) = diagnostics_neighbor(request) {
             neighbors.push(neighbor);
@@ -365,21 +722,22 @@ impl CoreFrameHandler {
 
     // Related-file hints only carry workspace-relative paths, so the core uses
     // the synchronized current-file metadata to resolve and read them itself.
-    fn related_hint_neighbors(&self, request: &WireCompletionRequest) -> Vec<Neighbor> {
+    async fn related_hint_documents(
+        &self,
+        request: &WireCompletionRequest,
+    ) -> Vec<RetrievalDocument> {
         let Some((workspace_root, current_file_path)) = self.workspace_context(request) else {
             return Vec::new();
         };
-        let signal_terms = signal_terms(request.signals.as_ref());
 
         let mut loaded = Vec::with_capacity(request.related_file_hints.len());
         for (index, hint) in request.related_file_hints.iter().enumerate() {
             if hint.path == current_file_path {
                 continue;
             }
-            if let Some(neighbor) = load_related_hint_neighbor(&workspace_root, hint) {
+            if let Some(document) = load_related_hint_document(&workspace_root, hint).await {
                 loaded.push(LoadedRelatedHint {
-                    signal_score: signal_score(&neighbor, &signal_terms),
-                    neighbor,
+                    document,
                     score_hint: hint.score_hint,
                     has_range: hint.range.is_some(),
                     source_index: index,
@@ -404,32 +762,48 @@ impl CoreFrameHandler {
 }
 
 struct LoadedRelatedHint {
-    signal_score: usize,
-    neighbor: Neighbor,
+    document: RetrievalDocument,
     score_hint: f32,
     has_range: bool,
     source_index: usize,
 }
 
-fn load_related_hint_neighbor(
+async fn load_related_hint_document(
     workspace_root: &Path,
     hint: &WireRelatedFileHint,
-) -> Option<Neighbor> {
+) -> Option<RetrievalDocument> {
     let path = workspace_root.join(&hint.path);
-    let text = std::fs::read_to_string(&path).ok()?;
+    // Cap the read so a pathologically large related file cannot blow the
+    // prompt budget or stall the reactor; oversized files are skipped.
+    let metadata = tokio::fs::metadata(&path).await.ok()?;
+    if metadata.len() > MAX_RELATED_FILE_BYTES {
+        return None;
+    }
+    let text = tokio::fs::read_to_string(&path).await.ok()?;
     let text = clip_related_file(&text, hint.range);
 
-    Some(metadata_neighbor(hint.path.clone(), text))
+    Some(RetrievalDocument {
+        id: hint.path.clone(),
+        file_path: hint.path.clone(),
+        range: hint.range.unwrap_or(Range {
+            start_line: 0,
+            start_col: 0,
+            end_line: 0,
+            end_col: 0,
+        }),
+        text,
+        source_hint: hint.source.clone(),
+        score_hint: hint.score_hint,
+    })
 }
 
-// Loaded related files are re-ranked in the core so prompt ordering stays
-// stable even when some hints fail to load or point back to the current file.
-fn rank_related_hints(mut loaded: Vec<LoadedRelatedHint>) -> Vec<Neighbor> {
+// Loaded related files are pre-ordered stably before the retrieval channels run
+// so ties remain deterministic when scores land exactly equal.
+fn rank_related_hints(mut loaded: Vec<LoadedRelatedHint>) -> Vec<RetrievalDocument> {
     loaded.sort_by(|left, right| {
         right
-            .signal_score
-            .cmp(&left.signal_score)
-            .then_with(|| right.score_hint.total_cmp(&left.score_hint))
+            .score_hint
+            .total_cmp(&left.score_hint)
             .then_with(|| right.has_range.cmp(&left.has_range))
             .then_with(|| left.source_index.cmp(&right.source_index))
     });
@@ -438,11 +812,11 @@ fn rank_related_hints(mut loaded: Vec<LoadedRelatedHint>) -> Vec<Neighbor> {
     for candidate in loaded {
         if selected
             .iter()
-            .any(|neighbor: &Neighbor| neighbor.file_path == candidate.neighbor.file_path)
+            .any(|document: &RetrievalDocument| document.file_path == candidate.document.file_path)
         {
             continue;
         }
-        selected.push(candidate.neighbor);
+        selected.push(candidate.document);
         if selected.len() >= MAX_RELATED_HINT_NEIGHBORS {
             break;
         }
@@ -497,11 +871,23 @@ fn clip_related_window(text: &str, range: Range) -> String {
 }
 
 fn clip_related_prefix(text: &str) -> String {
-    const MAX_CHARS: usize = 4_000;
-    if text.len() <= MAX_CHARS {
-        return text.to_owned();
+    const MAX_BYTES: usize = 4_000;
+    clip_utf8_prefix(text, MAX_BYTES).to_owned()
+}
+
+// Byte slicing a `&str` panics if the cut lands inside a multi-byte UTF-8
+// sequence, so the clip walks back to the nearest char boundary first.
+fn clip_utf8_prefix(text: &str, max_bytes: usize) -> &str {
+    if text.len() <= max_bytes {
+        return text;
     }
-    text[..MAX_CHARS].to_owned()
+
+    let mut end = max_bytes;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+
+    &text[..end]
 }
 
 // Signal terms give the core a lightweight relevance pass before a real
@@ -546,25 +932,6 @@ fn split_signal_tokens(value: &str) -> impl Iterator<Item = &str> {
     value
         .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
         .filter(|token| !token.is_empty())
-}
-
-fn signal_score(neighbor: &Neighbor, terms: &[String]) -> usize {
-    if terms.is_empty() {
-        return 0;
-    }
-
-    let file_path = neighbor.file_path.to_ascii_lowercase();
-    let text = neighbor.text.to_ascii_lowercase();
-    let mut score = 0;
-    for term in terms {
-        if file_path.contains(term) {
-            score += 4;
-        }
-        if text.contains(term) {
-            score += 1;
-        }
-    }
-    score
 }
 
 // Diagnostics become a pseudo-file so compiler friction reaches the model via

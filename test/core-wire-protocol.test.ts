@@ -9,7 +9,11 @@ import {
     toWireDocumentChange,
     toWireInitialDocument,
 } from '../src/node/core/core-ipc-client';
-import { decodeClientFramePayload } from '../src/node/core/core-flatbuffers';
+import {
+    decodeClientFramePayload,
+    decodeServerFramePayload,
+    encodeServerFramePayload,
+} from '../src/node/core/core-flatbuffers';
 
 test('initial document maps to snake_case wire fields', () => {
     const wire = toWireInitialDocument({
@@ -206,6 +210,16 @@ test('config update maps directly to the wire payload', () => {
     assert.deepEqual(toWireConfigUpdate({ configVersion: 4, configJson: '{"core":true}' }), {
         config_version: 4,
         config_json: '{"core":true}',
+    });
+});
+
+test('progress server frame round-trips through flatbuffers', () => {
+    const payload = encodeServerFramePayload({ kind: 'Progress', requestId: 12, text: 'indexing 3/10' });
+
+    assert.deepEqual(decodeServerFramePayload(payload), {
+        kind: 'Progress',
+        requestId: 12,
+        text: 'indexing 3/10',
     });
 });
 

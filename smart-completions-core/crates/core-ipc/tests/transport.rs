@@ -139,6 +139,19 @@ fn error_frame_round_trips_through_flatbuffers() {
 }
 
 #[test]
+fn progress_frame_round_trips_through_flatbuffers() {
+    let frame = ServerFrame::Progress {
+        request_id: 12,
+        text: "indexing 3/10".to_string(),
+    };
+
+    let encoded = encode_server_frame(&frame);
+    let decoded = decode_server_frame(&encoded).unwrap();
+
+    assert_eq!(decoded, frame);
+}
+
+#[test]
 fn edit_frame_round_trips_through_flatbuffers() {
     let frame = ServerFrame::Edit {
         request_id: 3,

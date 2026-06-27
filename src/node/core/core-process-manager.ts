@@ -3,6 +3,7 @@
 
 import { ChildProcess, spawn } from 'child_process';
 import * as fs from 'fs';
+import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -82,7 +83,10 @@ function pipeStderr(child: ChildProcess): void {
 }
 
 async function waitForSocket(socketPath: string): Promise<void> {
+    // A named pipe never appears on the filesystem, so wait by probing a
+    // connection instead of an existsSync poll the way the unix path can.
     if (process.platform === 'win32') {
+        await waitForConnectable(socketPath);
         return;
     }
 
@@ -92,6 +96,28 @@ async function waitForSocket(socketPath: string): Promise<void> {
         }
         await delay(20);
     }
+}
+
+async function waitForConnectable(socketPath: string): Promise<void> {
+    for (let attempt = 0; attempt < 100; attempt++) {
+        if (await canConnect(socketPath)) {
+            return;
+        }
+        await delay(20);
+    }
+}
+
+function canConnect(socketPath: string): Promise<boolean> {
+    return new Promise<boolean>(resolve => {
+        const socket = net.connect(socketPath);
+        const settle = (ok: boolean) => {
+            socket.removeAllListeners();
+            socket.destroy();
+            resolve(ok);
+        };
+        socket.once('connect', () => settle(true));
+        socket.once('error', () => settle(false));
+    });
 }
 
 function delay(ms: number): Promise<void> {

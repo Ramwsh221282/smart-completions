@@ -117,10 +117,11 @@ export type ServerFramePayload =
     | { kind: 'Token'; requestId: number; text: string }
     | { kind: 'Done'; requestId: number }
     | { kind: 'Error'; requestId: number; message: string }
+    | { kind: 'Progress'; requestId: number; text: string }
     | { kind: 'Edit'; requestId: number; newText: string; range?: WireRange; jump?: WirePosition };
 
 export interface DecodedServerFrame {
-    kind: 'Token' | 'Done' | 'Error' | 'Edit';
+    kind: 'Token' | 'Done' | 'Error' | 'Progress' | 'Edit';
     requestId: number;
     text?: string;
     message?: string;
@@ -451,7 +452,7 @@ function createShutdown(builder: Builder, reason: string): number {
 
 function createServerFrame(builder: Builder, frame: ServerFramePayload): number {
     const text =
-        frame.kind === 'Token'
+        frame.kind === 'Token' || frame.kind === 'Progress'
             ? createStringOffset(builder, frame.text)
             : frame.kind === 'Error'
               ? createStringOffset(builder, frame.message)
@@ -662,6 +663,8 @@ function decodeServerFrame(bb: ByteBuffer, table: number): DecodedServerFrame | 
             return { kind: 'Done', requestId };
         case FRAME_KIND.Error:
             return { kind: 'Error', requestId, message: readStringField(bb, table, 8) ?? '' };
+        case FRAME_KIND.Progress:
+            return { kind: 'Progress', requestId, text: readStringField(bb, table, 8) ?? '' };
         case FRAME_KIND.Edit:
             return {
                 kind: 'Edit',
@@ -863,6 +866,8 @@ function serverFrameKindValue(kind: ServerFramePayload['kind']): number {
             return FRAME_KIND.Done;
         case 'Error':
             return FRAME_KIND.Error;
+        case 'Progress':
+            return FRAME_KIND.Progress;
         case 'Edit':
             return FRAME_KIND.Edit;
         default:

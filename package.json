@@ -56,7 +56,8 @@
   ],
   "scripts": {
     "build": "tsc -b && npm run copy-resources",
-    "build:release": "npm run clean && NODE_ENV=production tsc -p tsconfig.release.json && npm run copy-resources && node scripts/strip-release-logs.mjs && node scripts/check-no-release-logs.mjs && node scripts/check-no-legacy-nes.mjs",
+    "build:release": "npm run clean && npm run build:core && npm run copy:core && npm run check:core && NODE_ENV=production tsc -p tsconfig.release.json && npm run copy-resources && node scripts/strip-release-logs.mjs && node scripts/check-no-release-logs.mjs && node scripts/check-no-legacy-nes.mjs",
+    "build:release:ts-only": "npm run clean && NODE_ENV=production tsc -p tsconfig.release.json && npm run copy-resources && node scripts/strip-release-logs.mjs && node scripts/check-no-release-logs.mjs && node scripts/check-no-legacy-nes.mjs",
     "strip:release-logs": "node scripts/strip-release-logs.mjs",
     "check:no-release-logs": "node scripts/check-no-release-logs.mjs",
     "check:no-legacy-nes": "node scripts/check-no-legacy-nes.mjs",

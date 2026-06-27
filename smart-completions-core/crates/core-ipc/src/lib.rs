@@ -1,8 +1,8 @@
 //! IPC transport for the Node <-> Rust core boundary.
 //!
 //! Layers: length-prefixed framing, a FlatBuffers wire protocol via planus, and
-//! a connection serving loop with a Unix-socket listener. Windows named pipes
-//! land on the cross-platform phase.
+//! a connection serving loop. The listener is platform-native: a Unix-domain
+//! socket on unix, a named pipe on Windows, both reached via `serve_socket`.
 
 pub mod connection;
 pub mod framing;
@@ -41,7 +41,10 @@ pub use protocol::{
     WireInitialDocument, WireOutlineItem, WireRecentEdit, WireRelatedFileHint, WireShutdown,
     WireSignals, WireTextChange,
 };
-pub use server::{serve_connection, ConnectionEnd, FrameHandler, HandlerOutcome};
+pub use server::{serve_connection, serve_socket, ConnectionEnd, FrameHandler, HandlerOutcome};
 
 #[cfg(unix)]
 pub use server::serve_unix_socket;
+
+#[cfg(windows)]
+pub use server::serve_named_pipe;

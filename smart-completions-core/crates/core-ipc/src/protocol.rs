@@ -252,6 +252,13 @@ pub enum ServerFrame {
         /// Failure message.
         message: String,
     },
+    /// A progress/status update that does not finish the request.
+    Progress {
+        /// Request the update belongs to.
+        request_id: RequestId,
+        /// Human-readable status text.
+        text: String,
+    },
     /// A next-edit suggestion edit.
     Edit {
         /// Request the edit belongs to.
@@ -275,10 +282,6 @@ pub enum ProtocolError {
     /// The frame omitted a field this high-level DTO still requires.
     #[error("missing field `{0}`")]
     MissingField(&'static str),
-
-    /// The frame kind is defined in schema but not handled by the active DTO.
-    #[error("unsupported server frame kind `{0}`")]
-    UnsupportedServerFrameKind(&'static str),
 }
 
 /// Encodes a client frame to FlatBuffers bytes.
@@ -314,7 +317,7 @@ pub fn encode_server_frame(frame: &ServerFrame) -> Vec<u8> {
 pub fn decode_server_frame(bytes: &[u8]) -> Result<ServerFrame, ProtocolError> {
     let frame = sc::StreamFrameRef::read_as_root(bytes)?;
     let generated: sc::StreamFrame = frame.try_into()?;
-    from_generated_server_frame(generated)
+    Ok(from_generated_server_frame(generated))
 }
 
 // Generated schema types stay isolated here so the rest of the core can keep
@@ -482,6 +485,18 @@ fn to_generated_server_frame(frame: &ServerFrame) -> sc::StreamFrame {
             jump_line: 0,
             jump_col: 0,
         },
+        ServerFrame::Progress { request_id, text } => sc::StreamFrame {
+            request_id: *request_id,
+            kind: sc::FrameKind::Progress,
+            text: Some(text.clone()),
+            edit_range_start_line: 0,
+            edit_range_start_col: 0,
+            edit_range_end_line: 0,
+            edit_range_end_col: 0,
+            new_text: None,
+            jump_line: 0,
+            jump_col: 0,
+        },
         ServerFrame::Edit {
             request_id,
             range,
@@ -502,23 +517,29 @@ fn to_generated_server_frame(frame: &ServerFrame) -> sc::StreamFrame {
     }
 }
 
-fn from_generated_server_frame(frame: sc::StreamFrame) -> Result<ServerFrame, ProtocolError> {
+// Every schema `FrameKind` maps to a `ServerFrame`, so this conversion is
+// total: missing optional strings default to empty rather than failing.
+fn from_generated_server_frame(frame: sc::StreamFrame) -> ServerFrame {
     match frame.kind {
-        sc::FrameKind::Token => Ok(ServerFrame::Token {
+        sc::FrameKind::Token => ServerFrame::Token {
             request_id: frame.request_id,
             text: frame.text.unwrap_or_default(),
-        }),
-        sc::FrameKind::Done => Ok(ServerFrame::Done {
+        },
+        sc::FrameKind::Done => ServerFrame::Done {
             request_id: frame.request_id,
-        }),
-        sc::FrameKind::Error => Ok(ServerFrame::Error {
+        },
+        sc::FrameKind::Error => ServerFrame::Error {
             request_id: frame.request_id,
             message: frame.text.unwrap_or_default(),
-        }),
+        },
+        sc::FrameKind::Progress => ServerFrame::Progress {
+            request_id: frame.request_id,
+            text: frame.text.unwrap_or_default(),
+        },
         sc::FrameKind::Edit => {
             let jump = jump_from_generated_frame(&frame);
 
-            Ok(ServerFrame::Edit {
+            ServerFrame::Edit {
                 request_id: frame.request_id,
                 range: Range {
                     start_line: frame.edit_range_start_line,
@@ -528,9 +549,8 @@ fn from_generated_server_frame(frame: sc::StreamFrame) -> Result<ServerFrame, Pr
                 },
                 new_text: frame.new_text.unwrap_or_default(),
                 jump,
-            })
+            }
         }
-        sc::FrameKind::Progress => Err(ProtocolError::UnsupportedServerFrameKind("Progress")),
     }
 }
 

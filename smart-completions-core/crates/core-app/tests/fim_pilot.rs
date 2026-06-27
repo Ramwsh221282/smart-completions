@@ -150,12 +150,12 @@ async fn next_frame(receiver: &mut UnboundedReceiver<ServerFrame>) -> ServerFram
         .expect("channel closed before a frame arrived")
 }
 
-fn drive(
+async fn drive(
     handler: &mut CoreFrameHandler,
     frame: ClientFrame,
     frames: &UnboundedSender<ServerFrame>,
 ) {
-    let _ = handler.handle(frame, frames);
+    let _ = handler.handle(frame, frames).await;
 }
 
 #[tokio::test]
@@ -163,18 +163,20 @@ async fn routes_a_fim_completion_and_streams_tokens_then_done() {
     let server = MockServer::start().await;
     mount_completion(&server, "data: {\"content\":\"foo\"}\n\ndata: [DONE]\n\n").await;
 
-    let mut handler = CoreFrameHandler::new(GenerationClient::new(format!(
-        "{}/completion",
-        server.uri()
-    )));
+    let endpoint = format!("{}/completion", server.uri());
+    let mut handler = CoreFrameHandler::new(
+        GenerationClient::new(endpoint.clone()),
+        GenerationClient::new(endpoint),
+    );
     let (frames, mut receiver) = unbounded_channel::<ServerFrame>();
 
-    drive(&mut handler, snapshot(), &frames);
+    drive(&mut handler, snapshot(), &frames).await;
     drive(
         &mut handler,
         completion("qwen2.5-coder", CompletionMode::Fim),
         &frames,
-    );
+    )
+    .await;
 
     assert_eq!(
         next_frame(&mut receiver).await,
@@ -203,13 +205,14 @@ async fn includes_frontend_metadata_blocks_in_the_fim_prompt() {
     .unwrap();
     fs::write(workspace_root.join("src/dep.ts"), "export const dep = 1;\n").unwrap();
 
-    let mut handler = CoreFrameHandler::new(GenerationClient::new(format!(
-        "{}/completion",
-        server.uri()
-    )));
+    let endpoint = format!("{}/completion", server.uri());
+    let mut handler = CoreFrameHandler::new(
+        GenerationClient::new(endpoint.clone()),
+        GenerationClient::new(endpoint),
+    );
     let (frames, mut receiver) = unbounded_channel::<ServerFrame>();
 
-    drive(&mut handler, workspace_snapshot(&workspace_root), &frames);
+    drive(&mut handler, workspace_snapshot(&workspace_root), &frames).await;
     let mut completion =
         workspace_completion(&workspace_root, "qwen2.5-coder", CompletionMode::Fim);
     let ClientFrame::CompletionRequest(request) = &mut completion else {
@@ -246,7 +249,7 @@ async fn includes_frontend_metadata_blocks_in_the_fim_prompt() {
             score_hint: 0.8,
         },
     ];
-    drive(&mut handler, completion, &frames);
+    drive(&mut handler, completion, &frames).await;
 
     assert_eq!(
         next_frame(&mut receiver).await,
@@ -287,15 +290,19 @@ async fn includes_frontend_metadata_blocks_in_the_fim_prompt() {
 
 #[tokio::test]
 async fn rejects_an_unsupported_fim_model_with_an_error_frame() {
-    let mut handler = CoreFrameHandler::new(GenerationClient::new("http://127.0.0.1:1/completion"));
+    let mut handler = CoreFrameHandler::new(
+        GenerationClient::new("http://127.0.0.1:1/completion"),
+        GenerationClient::new("http://127.0.0.1:1/completion"),
+    );
     let (frames, mut receiver) = unbounded_channel::<ServerFrame>();
 
-    drive(&mut handler, snapshot(), &frames);
+    drive(&mut handler, snapshot(), &frames).await;
     drive(
         &mut handler,
         completion("ghost-model", CompletionMode::Fim),
         &frames,
-    );
+    )
+    .await;
 
     let frame = next_frame(&mut receiver).await;
     assert!(matches!(frame, ServerFrame::Error { request_id: 1, .. }));
@@ -310,18 +317,20 @@ async fn routes_a_nes_completion_and_emits_edit_then_done() {
     )
     .await;
 
-    let mut handler = CoreFrameHandler::new(GenerationClient::new(format!(
-        "{}/completion",
-        server.uri()
-    )));
+    let endpoint = format!("{}/completion", server.uri());
+    let mut handler = CoreFrameHandler::new(
+        GenerationClient::new(endpoint.clone()),
+        GenerationClient::new(endpoint),
+    );
     let (frames, mut receiver) = unbounded_channel::<ServerFrame>();
 
-    drive(&mut handler, snapshot(), &frames);
+    drive(&mut handler, snapshot(), &frames).await;
     drive(
         &mut handler,
         completion("sweep-default", CompletionMode::Nes),
         &frames,
-    );
+    )
+    .await;
 
     assert_eq!(
         next_frame(&mut receiver).await,
@@ -334,7 +343,11 @@ async fn routes_a_nes_completion_and_emits_edit_then_done() {
                 end_col: 0,
             },
             new_text: "const x = 2;".to_string(),
-            jump: None,
+            jump: Some(Position {
+                line: 0,
+                column: 0,
+                offset: 0,
+            }),
         }
     );
     assert_eq!(

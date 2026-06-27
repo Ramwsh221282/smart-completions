@@ -84,9 +84,11 @@ fn append_neighbor(out: &mut String, file_path: &str, text: &str) {
 }
 
 fn append_current_file_fim(out: &mut String, input: &FimRenderInput<'_>) {
+    // The training format puts the path on its own line; gluing it directly to
+    // `<|fim_prefix|>` is off-distribution and degrades Qwen repo completions.
     let _ = write!(
         out,
-        "<|file_sep|>{}<|fim_prefix|>{}<|fim_suffix|>{}<|fim_middle|>",
+        "<|file_sep|>{}\n<|fim_prefix|>{}<|fim_suffix|>{}<|fim_middle|>",
         input.file_path, input.prefix, input.suffix
     );
 }

@@ -11,6 +11,7 @@ use core_llama::GenerationClient;
 use tracing::info;
 
 const DEFAULT_FIM_URL: &str = "http://127.0.0.1:8020/completion";
+const DEFAULT_NES_URL: &str = "http://127.0.0.1:8010/completion";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -37,15 +38,17 @@ async fn run(socket_path: Option<String>) -> Result<()> {
 }
 
 async fn serve(path: &str) -> Result<()> {
-    let endpoint = fim_endpoint();
+    let fim = fim_endpoint();
+    let nes = nes_endpoint();
     info!(
         socket = path,
-        fim = endpoint.as_str(),
+        fim = fim.as_str(),
+        nes = nes.as_str(),
         "smart-completions-core listening"
     );
 
     tokio::select! {
-        result = core_app::run(path, GenerationClient::new(endpoint)) => result?,
+        result = core_app::run(path, GenerationClient::new(fim), GenerationClient::new(nes)) => result?,
         () = wait_for_signal_inner() => info!("smart-completions-core interrupted"),
     }
 
@@ -71,6 +74,10 @@ fn init_tracing() {
 
 fn fim_endpoint() -> String {
     env::var("SMART_COMPLETIONS_CORE_FIM_URL").unwrap_or_else(|_| DEFAULT_FIM_URL.to_owned())
+}
+
+fn nes_endpoint() -> String {
+    env::var("SMART_COMPLETIONS_CORE_NES_URL").unwrap_or_else(|_| DEFAULT_NES_URL.to_owned())
 }
 
 fn socket_path_from_args() -> Option<String> {

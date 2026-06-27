@@ -52,6 +52,29 @@ async fn streams_content_tokens_and_skips_non_json_events() {
 }
 
 #[tokio::test]
+async fn streams_openai_completions_and_chat_delta_shapes() {
+    let server = MockServer::start().await;
+    mount_sse(
+        &server,
+        "data: {\"choices\":[{\"text\":\"foo\"}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"bar\"}}]}\n\ndata: [DONE]\n\n",
+    )
+    .await;
+
+    let client = GenerationClient::new(format!("{}/completion", server.uri()));
+    let cancel = CancellationToken::new();
+    let mut tokens = Vec::new();
+    client
+        .stream_completion(&request(), &cancel, |token| {
+            tokens.push(token);
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(tokens, vec!["foo".to_string(), "bar".to_string()]);
+}
+
+#[tokio::test]
 async fn a_pre_cancelled_token_yields_no_completion_tokens() {
     let server = MockServer::start().await;
     mount_sse(&server, "data: {\"content\":\"x\"}\n\n").await;

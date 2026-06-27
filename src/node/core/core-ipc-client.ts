@@ -15,7 +15,7 @@ import {
     CoreInitialDocumentSnapshot,
     CoreTextChange,
 } from '../../common/core/core-protocol';
-import { decodeFrames, interpretServerFrame } from './core-frames';
+import { decodeFrames, interpretServerFrame, type ServerFrameKind } from './core-frames';
 import {
     type ClientFrame,
     diagnosticSeverityToWire,
@@ -177,7 +177,9 @@ export class CoreIpcClient {
 
     async cancel(requestId: number): Promise<void> {
         await this.trySend({ kind: 'Cancel', data: { request_id: requestId } });
-        this.settleResolveAccumulated(requestId);
+        // Never surface a half-streamed completion: settle empty so the UI shows
+        // nothing rather than a stale partial token sequence.
+        this.settleEmpty(requestId);
     }
 
     private registerPending(
@@ -185,7 +187,9 @@ export class CoreIpcClient {
         resolve: (result: CoreIpcCompletionResult) => void,
         reject: (error: Error) => void,
     ): void {
-        const timer = setTimeout(() => this.settleResolveAccumulated(requestId), REQUEST_TIMEOUT_MS);
+        // A timeout fails open to an empty result for the same reason as cancel:
+        // a partial completion is worse than no suggestion.
+        const timer = setTimeout(() => this.settleEmpty(requestId), REQUEST_TIMEOUT_MS);
         this.pending.set(requestId, { tokens: [], edit: undefined, resolve, reject, timer });
     }
 
@@ -219,7 +223,7 @@ export class CoreIpcClient {
 
     private applyFrame(
         pending: PendingCompletion,
-        kind: 'Token' | 'Done' | 'Error' | 'Edit',
+        kind: ServerFrameKind,
         interpreted: {
             requestId: number;
             text?: string;
@@ -238,6 +242,8 @@ export class CoreIpcClient {
         } else if (kind === 'Error') {
             this.settleReject(interpreted.requestId, new Error(interpreted.message ?? 'core error'));
         }
+        // 'Progress' is informational: it must not settle the request, so the
+        // stream keeps flowing until Done/Error/Edit.
     }
 
     private settleResolve(requestId: number, pending: PendingCompletion): void {
@@ -246,9 +252,11 @@ export class CoreIpcClient {
         active?.resolve(result);
     }
 
-    private settleResolveAccumulated(requestId: number): void {
+    // Resolves with no text and no edit; used for cancel/timeout so accumulated
+    // partial tokens are discarded instead of being shown.
+    private settleEmpty(requestId: number): void {
         const pending = this.takePending(requestId);
-        pending?.resolve(pending.edit ? { edit: pending.edit } : { text: pending.tokens.join('') });
+        pending?.resolve({ text: '' });
     }
 
     private settleReject(requestId: number, error: Error): void {

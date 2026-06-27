@@ -112,3 +112,58 @@ where
 fn remove_stale_socket(path: &std::path::Path) {
     let _ = std::fs::remove_file(path);
 }
+
+/// Binds a Windows named pipe and serves connections until shutdown.
+///
+/// One server instance is created per accepted client so a fresh instance is
+/// always available for the next connection, matching the Win32 pipe model.
+///
+/// # Errors
+/// Returns an I/O error if creating the pipe or accepting fails.
+#[cfg(windows)]
+pub async fn serve_named_pipe<H>(path: &str, handler: &mut H) -> std::io::Result<()>
+where
+    H: FrameHandler,
+{
+    use tokio::net::windows::named_pipe::ServerOptions;
+
+    let mut server = ServerOptions::new()
+        .first_pipe_instance(true)
+        .create(path)?;
+    loop {
+        server.connect().await?;
+        let connected = server;
+        server = ServerOptions::new().create(path)?;
+
+        let (reader, writer) = tokio::io::split(connected);
+        match serve_connection(reader, writer, handler).await {
+            Ok(ConnectionEnd::ShutdownRequested) => return Ok(()),
+            Ok(ConnectionEnd::Disconnected) => {}
+            Err(err) => tracing::warn!(error = %err, "core connection ended with error"),
+        }
+    }
+}
+
+/// Serves the platform-native local transport: Unix socket or Windows named pipe.
+///
+/// # Errors
+/// Returns an I/O error if binding/creating or accepting fails.
+#[cfg(unix)]
+pub async fn serve_socket<H>(path: &str, handler: &mut H) -> std::io::Result<()>
+where
+    H: FrameHandler,
+{
+    serve_unix_socket(std::path::Path::new(path), handler).await
+}
+
+/// Serves the platform-native local transport: Unix socket or Windows named pipe.
+///
+/// # Errors
+/// Returns an I/O error if binding/creating or accepting fails.
+#[cfg(windows)]
+pub async fn serve_socket<H>(path: &str, handler: &mut H) -> std::io::Result<()>
+where
+    H: FrameHandler,
+{
+    serve_named_pipe(path, handler).await
+}

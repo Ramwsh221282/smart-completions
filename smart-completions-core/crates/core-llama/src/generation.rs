@@ -92,10 +92,23 @@ impl GenerationClient {
     }
 }
 
+// Accepts the three llama-server / OpenAI-compatible streaming shapes so the
+// same client works against `/completion`, `/v1/completions`, and
+// `/v1/chat/completions` without the caller knowing which endpoint config picked.
 fn token_from_sse_data(data: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(data).ok()?;
     value
         .get("content")
         .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            value
+                .pointer("/choices/0/text")
+                .and_then(serde_json::Value::as_str)
+        })
+        .or_else(|| {
+            value
+                .pointer("/choices/0/delta/content")
+                .and_then(serde_json::Value::as_str)
+        })
         .map(ToOwned::to_owned)
 }

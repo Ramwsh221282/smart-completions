@@ -37,7 +37,7 @@ fn renders_bare_fim_prompt_without_repo_context() {
 
     assert_eq!(
         prompt,
-        "<|file_sep|>a.ts<|fim_prefix|>const x = <|fim_suffix|>;\n<|fim_middle|>"
+        "<|file_sep|>a.ts\n<|fim_prefix|>const x = <|fim_suffix|>;\n<|fim_middle|>"
     );
 }
 
@@ -50,7 +50,7 @@ fn renders_repo_context_before_the_current_file() {
 
     assert_eq!(
         prompt,
-        "<|repo_name|>workspace\n<|file_sep|>b.ts\nexport const b = 1;\n<|file_sep|>a.ts<|fim_prefix|>const x = <|fim_suffix|>;\n<|fim_middle|>"
+        "<|repo_name|>workspace\n<|file_sep|>b.ts\nexport const b = 1;\n<|file_sep|>a.ts\n<|fim_prefix|>const x = <|fim_suffix|>;\n<|fim_middle|>"
     );
 }
 
