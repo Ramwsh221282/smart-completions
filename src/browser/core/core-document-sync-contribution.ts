@@ -6,6 +6,8 @@ import { FrontendApplicationContribution } from '@theia/core/lib/browser';
 import { Disposable, DisposableCollection } from '@theia/core/lib/common';
 import { inject, injectable } from '@theia/core/shared/inversify';
 import * as monaco from '@theia/monaco-editor-core';
+import URI from '@theia/core/lib/common/uri';
+import { WorkspaceService } from '@theia/workspace/lib/browser';
 import { CoreBackendService } from '../../common/core/core-protocol';
 import { toCoreDocumentChange, toCoreInitialSnapshot } from './document-sync-mapping';
 
@@ -13,6 +15,8 @@ import { toCoreDocumentChange, toCoreInitialSnapshot } from './document-sync-map
 export class CoreDocumentSyncContribution implements FrontendApplicationContribution, Disposable {
     @inject(CoreBackendService)
     protected readonly core!: CoreBackendService;
+    @inject(WorkspaceService)
+    protected readonly workspace!: WorkspaceService;
 
     private readonly toDispose = new DisposableCollection();
     private readonly modelDisposables = new Map<string, DisposableCollection>();
@@ -74,7 +78,20 @@ export class CoreDocumentSyncContribution implements FrontendApplicationContribu
             version: model.getVersionId(),
             languageId: model.getLanguageId(),
             scheme: model.uri.scheme,
+            filePath: this.relativeFilePath(model.uri.toString()),
             text: model.getValue(),
         });
+    }
+
+    private relativeFilePath(uri: string): string | undefined {
+        const target = new URI(uri);
+        const roots = this.workspace.tryGetRoots();
+        for (let i = 0; i < roots.length; i++) {
+            const relative = roots[i].resource.relative(target);
+            if (relative) {
+                return relative.toString();
+            }
+        }
+        return undefined;
     }
 }

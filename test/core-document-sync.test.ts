@@ -18,12 +18,27 @@ test('initial snapshot marks the untitled scheme as a buffer', () => {
         version: 1,
         languageId: 'markdown',
         scheme: 'untitled',
+        filePath: undefined,
         text: 'hi',
     });
 
     assert.equal(snapshot.kind, 'untitled');
     assert.equal(snapshot.fileMode, 'prose');
     assert.equal(snapshot.text, 'hi');
+});
+
+test('initial snapshot forwards optional relative file path', () => {
+    const snapshot = toCoreInitialSnapshot({
+        uri: 'file:///repo/src/a.ts',
+        version: 2,
+        languageId: 'typescript',
+        scheme: 'file',
+        filePath: 'src/a.ts',
+        text: 'const a = 1;',
+    });
+
+    assert.equal(snapshot.filePath, 'src/a.ts');
+    assert.equal(snapshot.kind, 'file');
 });
 
 test('document change derives from and to versions', () => {

@@ -1,6 +1,7 @@
 //! Client-frame handler: document sync plus the FIM pilot route.
 
 use std::fmt::Write;
+use std::path::{Path, PathBuf};
 
 use core_dispatch::CancellationRegistry;
 use core_documents::{CoreDocumentStore, DocumentContentChange, InitialDocumentSnapshot};
@@ -136,7 +137,7 @@ impl CoreFrameHandler {
             .map_err(|err| err.to_string())?;
         // Metadata rides through the existing repo-context channel, so the
         // model sees it now without waiting for a dedicated retrieval stage.
-        let neighbors = prompt_metadata_neighbors(request);
+        let neighbors = self.prompt_context_neighbors(request);
 
         let input = FimRenderInput {
             language_id: &request.language_id,
@@ -179,73 +180,114 @@ fn to_content_changes(changes: Vec<WireTextChange>) -> Vec<DocumentContentChange
         .collect()
 }
 
-// Synthetic neighbors let the current FIM prompt contract reuse frontend
-// metadata without teaching each model a second metadata-specific format.
-fn prompt_metadata_neighbors(request: &WireCompletionRequest) -> Vec<Neighbor> {
-    let mut neighbors = Vec::with_capacity(metadata_neighbor_capacity(request));
+impl CoreFrameHandler {
+    // Related-file hints now resolve to real file contents before the prompt is
+    // rendered; the remaining metadata still flows through pseudo-files.
+    fn prompt_context_neighbors(&self, request: &WireCompletionRequest) -> Vec<Neighbor> {
+        let mut neighbors = self.related_hint_neighbors(request);
 
-    if let Some(neighbor) = related_hints_neighbor(request) {
-        neighbors.push(neighbor);
-    }
-    if let Some(neighbor) = diagnostics_neighbor(request) {
-        neighbors.push(neighbor);
-    }
-    if let Some(neighbor) = outline_neighbor(request) {
-        neighbors.push(neighbor);
-    }
-    if let Some(neighbor) = signals_neighbor(request) {
-        neighbors.push(neighbor);
+        if let Some(neighbor) = diagnostics_neighbor(request) {
+            neighbors.push(neighbor);
+        }
+        if let Some(neighbor) = outline_neighbor(request) {
+            neighbors.push(neighbor);
+        }
+        if let Some(neighbor) = signals_neighbor(request) {
+            neighbors.push(neighbor);
+        }
+
+        neighbors
     }
 
-    neighbors
+    // Related-file hints only carry workspace-relative paths, so the core uses
+    // the synchronized current-file metadata to resolve and read them itself.
+    fn related_hint_neighbors(&self, request: &WireCompletionRequest) -> Vec<Neighbor> {
+        let Some(workspace_root) = self.workspace_root(request) else {
+            return Vec::new();
+        };
+
+        let mut neighbors = Vec::with_capacity(request.related_file_hints.len());
+        for hint in &request.related_file_hints {
+            if let Some(neighbor) = load_related_hint_neighbor(&workspace_root, hint) {
+                neighbors.push(neighbor);
+            }
+        }
+        neighbors
+    }
+
+    fn workspace_root(&self, request: &WireCompletionRequest) -> Option<PathBuf> {
+        let current_file = self
+            .store
+            .file_path_at(&request.uri, request.version)
+            .ok()
+            .flatten()?;
+        derive_workspace_root(&request.uri, current_file)
+    }
 }
 
-fn metadata_neighbor_capacity(request: &WireCompletionRequest) -> usize {
-    let mut count = 0;
-    if !request.related_file_hints.is_empty() {
-        count += 1;
-    }
-    if !request.diagnostics.is_empty() {
-        count += 1;
-    }
-    if !request.outline.is_empty() {
-        count += 1;
-    }
-    if request.signals.is_some() {
-        count += 1;
-    }
-    count
+fn load_related_hint_neighbor(
+    workspace_root: &Path,
+    hint: &WireRelatedFileHint,
+) -> Option<Neighbor> {
+    let path = workspace_root.join(&hint.path);
+    let text = std::fs::read_to_string(&path).ok()?;
+    let text = clip_related_file(&text, hint.range);
+
+    Some(metadata_neighbor(hint.path.clone(), text))
 }
 
-// Related-file hints only carry paths and ranges so far, therefore the prompt
-// gets a compact pseudo-file until Rust owns real file loading.
-fn related_hints_neighbor(request: &WireCompletionRequest) -> Option<Neighbor> {
-    if request.related_file_hints.is_empty() {
-        return None;
+fn derive_workspace_root(uri: &str, relative_file_path: &str) -> Option<PathBuf> {
+    let mut absolute_path = file_uri_to_path(uri)?;
+    let component_count = Path::new(relative_file_path).components().count();
+    for _ in 0..component_count {
+        if !absolute_path.pop() {
+            return None;
+        }
     }
-
-    let mut text = String::new();
-    for hint in &request.related_file_hints {
-        append_related_hint_line(&mut text, hint);
-    }
-
-    Some(metadata_neighbor(format!("related/{}", request.uri), text))
+    Some(absolute_path)
 }
 
-fn append_related_hint_line(text: &mut String, hint: &WireRelatedFileHint) {
-    let _ = write!(text, "{}", hint.path);
-    if let Some(range) = hint.range {
-        let _ = write!(
-            text,
-            " [{}:{}-{}:{}]",
-            range.start_line + 1,
-            range.start_col,
-            range.end_line + 1,
-            range.end_col,
-        );
+fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
+    let path = uri.strip_prefix("file://")?;
+    Some(PathBuf::from(path))
+}
+
+fn clip_related_file(text: &str, range: Option<Range>) -> String {
+    match range {
+        Some(range) => clip_related_window(text, range),
+        None => clip_related_prefix(text),
     }
-    let _ = write!(text, " source={}", hint.source);
-    let _ = writeln!(text, " score={:.2}", hint.score_hint);
+}
+
+fn clip_related_window(text: &str, range: Range) -> String {
+    const WINDOW_RADIUS: usize = 12;
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    let start = usize::try_from(range.start_line)
+        .unwrap_or(0)
+        .saturating_sub(WINDOW_RADIUS);
+    let end_line = usize::try_from(range.end_line)
+        .unwrap_or(0)
+        .saturating_add(WINDOW_RADIUS);
+    let end = end_line.min(lines.len().saturating_sub(1));
+    let mut clipped = String::new();
+    clipped.push_str(lines[start]);
+    for line in &lines[start + 1..=end] {
+        clipped.push('\n');
+        clipped.push_str(line);
+    }
+    clipped
+}
+
+fn clip_related_prefix(text: &str) -> String {
+    const MAX_CHARS: usize = 4_000;
+    if text.len() <= MAX_CHARS {
+        return text.to_owned();
+    }
+    text[..MAX_CHARS].to_owned()
 }
 
 // Diagnostics become a pseudo-file so compiler friction reaches the model via

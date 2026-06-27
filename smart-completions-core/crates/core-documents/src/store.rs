@@ -31,7 +31,7 @@ impl CoreDocumentStore {
 
     /// Stores or replaces a document from a full snapshot.
     pub fn upsert_initial_snapshot(&mut self, snapshot: InitialDocumentSnapshot) {
-        let state = DocumentState::new(snapshot.version, snapshot.text);
+        let state = DocumentState::new(snapshot.version, snapshot.file_path, snapshot.text);
         self.documents.insert(snapshot.uri, state);
     }
 
@@ -68,6 +68,21 @@ impl CoreDocumentStore {
         let state = self.state(uri)?;
         ensure_version(uri, state.version, version)?;
         Ok(&state.text)
+    }
+
+    /// Returns the stored workspace-relative path when the version matches.
+    ///
+    /// # Errors
+    /// Returns [`DocumentError`] when the document is unknown or the version
+    /// does not match.
+    pub fn file_path_at(
+        &self,
+        uri: &str,
+        version: DocumentVersion,
+    ) -> DocumentResult<Option<&str>> {
+        let state = self.state(uri)?;
+        ensure_version(uri, state.version, version)?;
+        Ok(state.file_path.as_deref())
     }
 
     /// Splits the document into prefix and suffix around the cursor.
@@ -107,14 +122,16 @@ impl CoreDocumentStore {
 #[derive(Debug, Clone)]
 struct DocumentState {
     version: DocumentVersion,
+    file_path: Option<String>,
     text: String,
     line_offsets: Vec<usize>,
 }
 
 impl DocumentState {
-    fn new(version: DocumentVersion, text: String) -> Self {
+    fn new(version: DocumentVersion, file_path: Option<String>, text: String) -> Self {
         let mut state = Self {
             version,
+            file_path,
             text,
             line_offsets: Vec::new(),
         };

@@ -14,6 +14,7 @@ import {
     symbolAtCursor,
     testNames,
 } from '../../../common/sweep/signals';
+import type { RelatedCandidate } from '../../../common/zeta21/related-files';
 import { dedupeRankRelated } from '../../../common/zeta21/related-files';
 import { FimLogger } from '../../../common/fim/logger';
 import { fileModeForLanguage } from '../../shared/file-mode';
@@ -67,7 +68,9 @@ export class FimContextCollector {
         ]);
         const relatedFiles: FimRelatedFile[] = dedupeRankRelated(relatedCandidates, MAX_FIM_RELATED_FILES);
         const diagnostics = params.collectDiagnostics ? collectDiagnostics(params.model) : [];
-        const relatedFileHints = params.collectCoreEnvelope ? buildRelatedFileHints(relatedFiles) : [];
+        const relatedFileHints = params.collectCoreEnvelope
+            ? buildRelatedFileHints(relatedFiles, relatedCandidates)
+            : [];
         const outline = params.collectCoreEnvelope ? flattenOutline(outlineSymbols) : [];
         const signals = params.collectCoreEnvelope
             ? coreSignals(params.model, params.position, recentEdits, diagnostics)
@@ -132,16 +135,38 @@ function collectDiagnostics(model: monaco.editor.ITextModel): CoreDiagnostic[] {
     return diagnostics;
 }
 
-function buildRelatedFileHints(relatedFiles: FimRelatedFile[]): CoreRelatedFileHint[] {
+function buildRelatedFileHints(
+    relatedFiles: FimRelatedFile[],
+    relatedCandidates: RelatedCandidate[],
+): CoreRelatedFileHint[] {
     const hints = new Array<CoreRelatedFileHint>(relatedFiles.length);
     for (let i = 0; i < relatedFiles.length; i++) {
+        const candidate = firstMatchingCandidate(relatedCandidates, relatedFiles[i].filePath);
         hints[i] = {
             path: relatedFiles[i].filePath,
+            range: candidate?.startLine !== undefined && candidate?.endLine !== undefined
+                ? {
+                    start: { line: candidate.startLine, character: 0 },
+                    end: { line: candidate.endLine, character: 0 },
+                }
+                : undefined,
             source: 'definition',
             scoreHint: relatedFiles[i].score,
         };
     }
     return hints;
+}
+
+function firstMatchingCandidate(
+    candidates: RelatedCandidate[],
+    filePath: string,
+): RelatedCandidate | undefined {
+    for (let i = 0; i < candidates.length; i++) {
+        if (candidates[i].filePath === filePath) {
+            return candidates[i];
+        }
+    }
+    return undefined;
 }
 
 function flattenOutline(symbols: OutlineSymbol[]): CoreOutlineItem[] {

@@ -29,6 +29,7 @@ export interface ModelSnapshotLike {
     version: number;
     languageId: string;
     scheme: string;
+    filePath?: string;
     text: string;
 }
 
@@ -43,7 +44,7 @@ export function toCoreInitialSnapshot(model: ModelSnapshotLike): CoreInitialDocu
         uri: model.uri,
         version: model.version,
         languageId: model.languageId,
-        filePath: undefined,
+        filePath: model.filePath,
         fileMode: fileModeForLanguage(model.languageId),
         kind: model.scheme === 'untitled' ? 'untitled' : 'file',
         text: model.text,
