@@ -65,3 +65,21 @@ test('postprocess trims echoed suffix prefix', () => {
     });
     assert.equal(text, 'computedValue');
 });
+
+test('postprocess trims duplicated trailing closers after suffix-echo handling', () => {
+    const text = postprocessFimCompletion('compute(value)\n)}', {
+        suffix: ')\n}',
+        generationMode: 'multiline',
+        stopTokens: [],
+    });
+    assert.equal(text, 'compute(value)');
+});
+
+test('postprocess keeps unmatched closers when suffix starts differently', () => {
+    const text = postprocessFimCompletion('compute(value)\n)}', {
+        suffix: '\n}',
+        generationMode: 'multiline',
+        stopTokens: [],
+    });
+    assert.equal(text, 'compute(value)\n)');
+});

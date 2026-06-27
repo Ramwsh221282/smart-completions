@@ -8,6 +8,7 @@ import { EmbeddingConfigSync } from './embedding/config-sync';
 import { SmartCompletionsStatusBar } from './status-bar/status-bar';
 import { SmartCompletionsCommands } from './commands';
 import { FimContextCollector } from './fim-module/data-gathering-layer/fim-context-collector';
+import { FimCompletionCache } from './fim-module/fim-completion-cache';
 import { FimEditHistoryRecorder } from './fim-module/data-gathering-layer/fim-edit-history-recorder';
 import { FimDefinitionRelatedSource } from './fim-module/data-gathering-layer/sources/definition-source';
 import { FimWorkspaceFiles } from './fim-module/data-gathering-layer/sources/workspace-files';
@@ -62,6 +63,7 @@ export default new ContainerModule(bind => {
     bind(FimDefinitionRelatedSource).toSelf().inSingletonScope();
     bind(FimEditHistoryRecorder).toSelf().inSingletonScope();
     bind(FrontendApplicationContribution).toService(FimEditHistoryRecorder);
+    bind(FimCompletionCache).toSelf().inSingletonScope();
     bind(FimContextCollector).toSelf().inSingletonScope();
 
     bind(FimInlineProvider).toSelf().inSingletonScope();

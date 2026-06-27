@@ -1,4 +1,5 @@
-import { GenerationMode } from '../../../common/model-types';
+import type { GenerationMode } from '../../../common/model-types';
+import { balanceCompletion } from './bracket-balance';
 import { normalizeCrlf } from '../../util/crlf';
 
 export interface PostprocessFimOptions {
@@ -28,6 +29,7 @@ export function postprocessFimCompletion(rawText: string, options: PostprocessFi
         }
     }
     text = trimSuffixEcho(text, normalizeCrlf(options.suffix));
+    text = balanceCompletion(text, normalizeCrlf(options.suffix));
     return text.trimEnd();
 }
 
