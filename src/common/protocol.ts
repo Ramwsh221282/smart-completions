@@ -34,7 +34,7 @@ export interface NesBackendService {
     configure(config: NesConfig): Promise<void>;
 }
 
-/** Отдельный zeta21-инференс (backend) через собственный RPC path, чтобы frontend не зависел от legacy NES routing. */
+/** Отдельный zeta21-инференс через собственный RPC path, чтобы Sweep и Zeta 2.1 не делили backend routing. */
 export const ZetaBackendService = Symbol('ZetaBackendService');
 export interface ZetaBackendService {
     predict(request: ZetaRequest, token?: CancellationToken): Promise<ZetaResponse>;

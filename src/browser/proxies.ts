@@ -55,7 +55,7 @@ export function bindNesProxy(bind: interfaces.Bind): void {
         .inSingletonScope();
 }
 
-/** Zeta proxy отделён от legacy NES path, потому что у zeta21 свой backend pipeline и wire format. */
+/** Zeta proxy отделён от Sweep NES path, потому что у zeta21 свой backend pipeline и wire format. */
 export function bindZetaProxy(bind: interfaces.Bind): void {
     bind(ZetaBackendService)
         .toDynamicValue(ctx => {

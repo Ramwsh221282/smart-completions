@@ -23,7 +23,7 @@ import { QwenTokenCounter } from './token-budget/token-counter';
 // Логгер backend orchestrator покрывает весь zeta21 цикл: retrieval -> prompt -> completion -> parse.
 const LOG = new ZetaLogger('node:backend-service');
 
-/** Оркестрирует полный цикл zeta21-предсказания через отдельный backend path, не смешивая его с legacy NES routing. */
+/** Оркестрирует полный цикл zeta21-предсказания через отдельный backend path, не смешивая его со Sweep backend routing. */
 @injectable()
 export class ZetaBackendService {
     @inject(EmbeddingIndexServiceImpl) private readonly embedding!: EmbeddingIndexServiceImpl;
