@@ -10,9 +10,13 @@ publish.workspace = true
 bytes.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+core-types = { path = "../core-types" }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "net", "time"] }
 
 [lints]
 workspace = true

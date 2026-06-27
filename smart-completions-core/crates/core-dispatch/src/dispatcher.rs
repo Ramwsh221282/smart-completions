@@ -44,13 +44,12 @@ impl Dispatcher {
     }
 
     /// Dispatches a request, registering and clearing its cancellation token.
-    #[expect(
-        clippy::unused_async,
-        reason = "dispatch awaits retrieval and generation once those phases land"
-    )]
-    pub async fn dispatch(&mut self, request: DispatchRequest) -> DispatchResponse {
+    ///
+    /// Routing is synchronous today; it gains `async` retrieval and generation
+    /// when those phases land.
+    pub fn dispatch(&mut self, request: &DispatchRequest) -> DispatchResponse {
         let cancel = self.cancellation.start(request.request_id);
-        let response = route(&request, &cancel);
+        let response = route(request, &cancel);
         self.cancellation.finish(request.request_id);
         response
     }

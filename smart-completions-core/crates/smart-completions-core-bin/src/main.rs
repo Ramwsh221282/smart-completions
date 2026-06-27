@@ -1,15 +1,18 @@
 //! `smart-completions-core` binary entry point.
 //!
-//! Boots tracing, parses the socket argument and keeps the process alive until
-//! a shutdown signal. The interprocess server loop and dispatcher wiring are
-//! added on the IPC schema phase; this entry point validates spawn, supervision
-//! and packaging end to end.
+//! Boots tracing, then serves the IPC socket, applying document sync to the
+//! shadow store and routing completion requests through the dispatcher.
+//! Generation streaming is wired on the llama-client phase; today a routed
+//! request answers with a `Done`/`Error` frame.
+
+mod handler;
 
 use std::env;
 
 use anyhow::Result;
-use core_documents::CoreDocumentStore;
 use tracing::info;
+
+use crate::handler::CoreFrameHandler;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -18,17 +21,41 @@ async fn main() -> Result<()> {
 }
 
 async fn run(socket_path: Option<String>) -> Result<()> {
-    let store = CoreDocumentStore::new();
+    let mut handler = CoreFrameHandler::new();
 
-    info!(
-        socket = socket_path.as_deref().unwrap_or("<none>"),
-        documents = store.len(),
-        "smart-completions-core started"
-    );
+    match socket_path {
+        Some(path) => serve(&path, &mut handler).await,
+        None => wait_for_signal().await,
+    }
+}
 
-    tokio::signal::ctrl_c().await?;
+#[cfg(unix)]
+async fn serve(path: &str, handler: &mut CoreFrameHandler) -> Result<()> {
+    info!(socket = path, "smart-completions-core listening");
+
+    tokio::select! {
+        result = core_ipc::serve_unix_socket(std::path::Path::new(path), handler) => result?,
+        () = wait_for_signal_inner() => info!("smart-completions-core interrupted"),
+    }
+
     info!("smart-completions-core shutting down");
     Ok(())
+}
+
+#[cfg(not(unix))]
+async fn serve(_path: &str, _handler: &mut CoreFrameHandler) -> Result<()> {
+    // The Windows named-pipe listener lands on the cross-platform phase.
+    wait_for_signal().await
+}
+
+async fn wait_for_signal() -> Result<()> {
+    wait_for_signal_inner().await;
+    info!("smart-completions-core shutting down");
+    Ok(())
+}
+
+async fn wait_for_signal_inner() {
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 fn init_tracing() {
