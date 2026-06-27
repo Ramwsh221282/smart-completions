@@ -6,9 +6,9 @@ import { injectable } from '@theia/core/shared/inversify';
 import {
     CoreBackendService,
     CoreCompletionRequest,
+    CoreCompletionResult,
     CoreDocumentChange,
     CoreInitialDocumentSnapshot,
-    CoreRequestAccepted,
     CoreStatus,
 } from '../../common/core/core-protocol';
 import { CoreIpcClient } from './core-ipc-client';
@@ -52,13 +52,17 @@ export class CoreBackendServiceImpl implements CoreBackendService {
         await this.ipc.sendDocumentChange(change);
     }
 
-    async requestCompletion(request: CoreCompletionRequest): Promise<CoreRequestAccepted> {
+    async requestCompletion(request: CoreCompletionRequest): Promise<CoreCompletionResult> {
         if (!this.started) {
-            return { accepted: false, reason: 'rust core disabled or not running' };
+            return { accepted: false, text: '', reason: 'rust core disabled or not running' };
         }
 
-        await this.ipc.sendCompletionRequest(request);
-        return { accepted: true };
+        try {
+            const text = await this.ipc.requestCompletion(request);
+            return { accepted: true, text };
+        } catch (error) {
+            return { accepted: false, text: '', reason: String(error) };
+        }
     }
 
     async cancel(requestId: number): Promise<void> {

@@ -6,6 +6,7 @@ import * as monaco from '@theia/monaco-editor-core';
 import type { FimConfig, FimRequest } from '../../common/fim-types';
 import type { FileMode } from '../../common/mode-types';
 import { FimBackendService } from '../../common/protocol';
+import { CoreBackendService } from '../../common/core/core-protocol';
 import { FimContextCollector } from './data-gathering-layer/fim-context-collector';
 import { FimCompletionCache, type FimCacheKeyInput } from './fim-completion-cache';
 import { readFimConfig } from '../preferences/preferences-schema';
@@ -15,6 +16,7 @@ import { fileModeForLanguage } from '../shared/file-mode';
 @injectable()
 export class FimInlineProvider implements FrontendApplicationContribution, monaco.languages.InlineCompletionsProvider, Disposable {
     @inject(FimBackendService) private readonly fim!: FimBackendService;
+    @inject(CoreBackendService) private readonly core!: CoreBackendService;
     @inject(FimCompletionCache) private readonly cache!: FimCompletionCache;
     @inject(FimContextCollector) private readonly collector!: FimContextCollector;
     @inject(PreferenceService) private readonly preferences!: PreferenceService;
@@ -23,6 +25,10 @@ export class FimInlineProvider implements FrontendApplicationContribution, monac
     private config!: FimConfig;
     // Флаг включения FIM из настроек; единственный gate для inline completions.
     private enabled = true;
+    // Опциональный путь через Rust-core; при пустом результате/ошибке откатываемся на TS backend.
+    private coreEnabled = false;
+    // Монотонный numeric id запроса для корреляции стрима фреймов в core.
+    private requestCounter = 0;
     debounceDelayMs = 120;
     displayName = 'Smart Completions FIM';
 
@@ -31,7 +37,10 @@ export class FimInlineProvider implements FrontendApplicationContribution, monac
         await this.pushConfig();
         this.toDispose.push(monaco.languages.registerInlineCompletionsProvider([{ scheme: 'file' }, { scheme: 'untitled' }], this));
         this.toDispose.push(this.preferences.onPreferenceChanged((event: PreferenceChange) => {
-            if (event.preferenceName.startsWith('smart-completions.fim')) {
+            if (
+                event.preferenceName.startsWith('smart-completions.fim') ||
+                event.preferenceName.startsWith('smart-completions.core')
+            ) {
                 void this.pushConfig();
             }
         }));
@@ -68,6 +77,7 @@ export class FimInlineProvider implements FrontendApplicationContribution, monac
     private async pushConfig(): Promise<void> {
         this.config = readFimConfig(this.preferences);
         this.enabled = this.preferences.get<boolean>('smart-completions.fim.enabled', true);
+        this.coreEnabled = this.preferences.get<boolean>('smart-completions.core.enabled', false);
         this.debounceDelayMs = this.config.debounceMs;
         this.cache.clear();
     }
@@ -83,6 +93,12 @@ export class FimInlineProvider implements FrontendApplicationContribution, monac
         token: monaco.CancellationToken,
     ): Promise<monaco.languages.InlineCompletions | undefined> {
         const version = model.getVersionId();
+        if (this.coreEnabled) {
+            const fromCore = await this.tryCoreCompletion(model, position, prepared, version, token);
+            if (fromCore !== undefined) {
+                return fromCore;
+            }
+        }
         const source = new CancellationTokenSource();
         const listener = token.onCancellationRequested(() => source.cancel());
         try {
@@ -117,6 +133,51 @@ export class FimInlineProvider implements FrontendApplicationContribution, monac
             collectRecentEdits: this.config.contextSources.recentEdits,
             collectRelatedFiles: this.config.contextSources.repoContext,
         });
+    }
+
+    /**
+     * Пытается получить completion из Rust-core. Возвращает undefined при пустом
+     * ответе, ошибке или устаревшей версии модели, чтобы вызвавший код откатился
+     * на TS backend.
+     */
+    private async tryCoreCompletion(
+        model: monaco.editor.ITextModel,
+        position: monaco.Position,
+        prepared: PreparedFimRequest,
+        version: number,
+        token: monaco.CancellationToken,
+    ): Promise<monaco.languages.InlineCompletions | undefined> {
+        try {
+            const result = await this.core.requestCompletion({
+                requestId: this.nextRequestId(),
+                mode: 'fim',
+                modelId: this.config.modelId,
+                uri: prepared.request.uri,
+                version,
+                fileMode: prepared.request.fileMode,
+                cursor: {
+                    lineNumber: position.lineNumber,
+                    column: position.column,
+                    offset: model.getOffsetAt(position),
+                },
+                configVersion: 0,
+            });
+            if (!result.accepted || !result.text) {
+                return undefined;
+            }
+            if (token.isCancellationRequested || model.getVersionId() !== version) {
+                return undefined;
+            }
+            this.cache.store(prepared.cacheKey, result.text);
+            return toInlineCompletions(prepared.range, result.text);
+        } catch {
+            return undefined;
+        }
+    }
+
+    private nextRequestId(): number {
+        this.requestCounter += 1;
+        return this.requestCounter;
     }
 }
 

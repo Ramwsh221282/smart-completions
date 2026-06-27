@@ -64,9 +64,10 @@ export interface CoreCompletionRequest {
     configVersion: number;
 }
 
-/** Acknowledgement for a routed completion request. */
-export interface CoreRequestAccepted {
+/** Result of a routed completion request: the assembled text plus status. */
+export interface CoreCompletionResult {
     accepted: boolean;
+    text: string;
     reason?: string;
 }
 
@@ -86,7 +87,7 @@ export const CoreBackendService = Symbol('CoreBackendService');
 export interface CoreBackendService {
     syncInitialDocument(snapshot: CoreInitialDocumentSnapshot): Promise<void>;
     applyDocumentChange(change: CoreDocumentChange): Promise<void>;
-    requestCompletion(request: CoreCompletionRequest): Promise<CoreRequestAccepted>;
+    requestCompletion(request: CoreCompletionRequest): Promise<CoreCompletionResult>;
     cancel(requestId: number): Promise<void>;
     getStatus(): Promise<CoreStatus>;
 }

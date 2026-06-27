@@ -14,6 +14,9 @@ import {
     CoreInitialDocumentSnapshot,
     CoreTextChange,
 } from '../../common/core/core-protocol';
+import { decodeFrames, interpretServerFrame } from './core-frames';
+
+const REQUEST_TIMEOUT_MS = 15_000;
 
 type WireFileMode = 'Code' | 'Prose';
 type WireMode = 'Fim' | 'Nes';
@@ -73,6 +76,9 @@ export type ClientFrame =
     | { kind: 'Cancel'; data: { request_id: number } }
     | { kind: 'Shutdown'; data: { reason: string } };
 
+type CoreFileModeInput = 'code' | 'prose';
+type CoreModeInput = 'fim' | 'nes';
+
 /** Maps the high-level file mode to the wire enum spelling. */
 export function fileModeToWire(mode: CoreFileModeInput): WireFileMode {
     return mode === 'prose' ? 'Prose' : 'Code';
@@ -82,9 +88,6 @@ export function fileModeToWire(mode: CoreFileModeInput): WireFileMode {
 export function modeToWire(mode: CoreModeInput): WireMode {
     return mode === 'nes' ? 'Nes' : 'Fim';
 }
-
-type CoreFileModeInput = 'code' | 'prose';
-type CoreModeInput = 'fim' | 'nes';
 
 /** Converts a document snapshot to its wire representation. */
 export function toWireInitialDocument(snapshot: CoreInitialDocumentSnapshot): WireInitialDocument {
@@ -134,12 +137,23 @@ export function encodeFrame(frame: ClientFrame): Buffer {
     return Buffer.concat([header, payload]);
 }
 
-/** Connects to the core socket and writes length-prefixed JSON frames. */
+interface PendingCompletion {
+    tokens: string[];
+    resolve: (text: string) => void;
+    reject: (error: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+}
+
+/** Connects to the core socket, writes client frames, and assembles responses. */
 export class CoreIpcClient {
     private socket: net.Socket | undefined;
+    private buffer: Buffer = Buffer.alloc(0);
+    private readonly pending = new Map<number, PendingCompletion>();
 
     async connect(socketPath: string): Promise<void> {
-        this.socket = await openSocket(socketPath);
+        const socket = await openSocket(socketPath);
+        this.attachReader(socket);
+        this.socket = socket;
     }
 
     isConnected(): boolean {
@@ -148,6 +162,7 @@ export class CoreIpcClient {
 
     async shutdown(): Promise<void> {
         await this.trySend({ kind: 'Shutdown', data: { reason: 'frontend shutdown' } });
+        this.failAll(new Error('core ipc shut down'));
         this.socket?.end();
         this.socket = undefined;
     }
@@ -161,12 +176,101 @@ export class CoreIpcClient {
         await this.send({ kind: 'DocumentChange', data: toWireDocumentChange(change) });
     }
 
-    async sendCompletionRequest(request: CoreCompletionRequest): Promise<void> {
-        await this.send({ kind: 'CompletionRequest', data: toWireCompletionRequest(request) });
+    /** Sends a completion request and resolves with the assembled token text. */
+    requestCompletion(request: CoreCompletionRequest): Promise<string> {
+        return new Promise<string>((resolve, reject) => {
+            this.registerPending(request.requestId, resolve, reject);
+            this.send({ kind: 'CompletionRequest', data: toWireCompletionRequest(request) }).catch(
+                error => this.settleReject(request.requestId, toError(error)),
+            );
+        });
     }
 
     async cancel(requestId: number): Promise<void> {
-        await this.send({ kind: 'Cancel', data: { request_id: requestId } });
+        await this.trySend({ kind: 'Cancel', data: { request_id: requestId } });
+        this.settleResolveAccumulated(requestId);
+    }
+
+    private registerPending(
+        requestId: number,
+        resolve: (text: string) => void,
+        reject: (error: Error) => void,
+    ): void {
+        const timer = setTimeout(() => this.settleResolveAccumulated(requestId), REQUEST_TIMEOUT_MS);
+        this.pending.set(requestId, { tokens: [], resolve, reject, timer });
+    }
+
+    private attachReader(socket: net.Socket): void {
+        socket.on('data', (chunk: Buffer | string) => {
+            this.onData(typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk);
+        });
+        socket.on('close', () => this.failAll(new Error('core socket closed')));
+        socket.on('error', error => this.failAll(toError(error)));
+    }
+
+    private onData(chunk: Buffer): void {
+        const { frames, rest } = decodeFrames(Buffer.concat([this.buffer, chunk]));
+        this.buffer = rest;
+        for (const frame of frames) {
+            this.dispatch(frame);
+        }
+    }
+
+    private dispatch(frame: unknown): void {
+        const interpreted = interpretServerFrame(frame);
+        if (!interpreted) {
+            return;
+        }
+        const pending = this.pending.get(interpreted.requestId);
+        if (!pending) {
+            return;
+        }
+        this.applyFrame(pending, interpreted.kind, interpreted);
+    }
+
+    private applyFrame(
+        pending: PendingCompletion,
+        kind: 'Token' | 'Done' | 'Error' | 'Edit',
+        interpreted: { requestId: number; text?: string; message?: string },
+    ): void {
+        if (kind === 'Token') {
+            pending.tokens.push(interpreted.text ?? '');
+        } else if (kind === 'Done') {
+            this.settleResolve(interpreted.requestId, pending.tokens.join(''));
+        } else if (kind === 'Error') {
+            this.settleReject(interpreted.requestId, new Error(interpreted.message ?? 'core error'));
+        }
+    }
+
+    private settleResolve(requestId: number, text: string): void {
+        const pending = this.takePending(requestId);
+        pending?.resolve(text);
+    }
+
+    private settleResolveAccumulated(requestId: number): void {
+        const pending = this.takePending(requestId);
+        pending?.resolve(pending.tokens.join(''));
+    }
+
+    private settleReject(requestId: number, error: Error): void {
+        const pending = this.takePending(requestId);
+        pending?.reject(error);
+    }
+
+    private takePending(requestId: number): PendingCompletion | undefined {
+        const pending = this.pending.get(requestId);
+        if (!pending) {
+            return undefined;
+        }
+        clearTimeout(pending.timer);
+        this.pending.delete(requestId);
+        return pending;
+    }
+
+    private failAll(error: Error): void {
+        for (const requestId of [...this.pending.keys()]) {
+            this.settleReject(requestId, error);
+        }
     }
 
     private async send(frame: ClientFrame): Promise<void> {
@@ -213,4 +317,8 @@ function writeAll(socket: net.Socket, data: Buffer): Promise<void> {
             }
         });
     });
+}
+
+function toError(value: unknown): Error {
+    return value instanceof Error ? value : new Error(String(value));
 }
